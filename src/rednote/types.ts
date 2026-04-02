@@ -82,7 +82,7 @@ export const REDNOTE_FONT_OPTIONS: RedNoteFontOption[] = [
 ];
 
 export const DEFAULT_REDNOTE_SETTINGS: RedNoteSettings = {
-  templateId: 'banpie-cover',
+  templateId: 'jacky-cover',
   fontFamily: REDNOTE_FONT_OPTIONS[0].value,
   fontSize: 16,
   userAvatar: '',

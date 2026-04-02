@@ -16,8 +16,8 @@ Obsidian 全平台内容分发插件 — 在 Obsidian 内完成「写作 → 选
 
 ### 小红书
 - 3:4 图文卡片，自动按内容权重分页
-- 12 款预设模板（Banpie 风格、极简、赛博、星空、樱花等）
-- 自定义字体、字号、分页标题级别
+- 12 款预设模板（Jacky 模板、极简、赛博、星空、樱花等）
+- 自定义字体、字号
 - 支持封面页、作者介绍页、导流素材配置
 - 批量导出 PNG / ZIP
 
@@ -80,8 +80,7 @@ npm run deploy
 
 ## 致谢
 
-- 核心逻辑迁移自 [MD_flow](https://github.com/Jackywxsz/MD_flow)（微信公众号 Markdown 编辑器）
-- 小红书卡片结构参考 Banpie 插件
+- 微信公众号编辑器基于 [花生编辑器](https://github.com/alchaincyf/huasheng_editor) 开发
 
 ## License
 

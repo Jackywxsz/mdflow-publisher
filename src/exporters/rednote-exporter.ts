@@ -103,8 +103,8 @@ export class RedNoteExporter implements PlatformExporter<RedNotePreparedData> {
       prevButton.classList.toggle('red-nav-hidden', currentIndex === 0);
       nextButton.classList.toggle('red-nav-hidden', currentIndex === sections.length - 1);
       imagePreview.classList.toggle(
-        'banpie-cover-active',
-        sections[currentIndex].classList.contains('banpie-cover-section')
+        'jacky-cover-active',
+        sections[currentIndex].classList.contains('jacky-cover-section')
       );
     };
 
@@ -163,7 +163,7 @@ export class RedNoteExporter implements PlatformExporter<RedNotePreparedData> {
 
       for (let i = 0; i < cards.length; i++) {
         this.updatePreviewState(exportSurface, i);
-        imagePreview.classList.toggle('banpie-cover-active', cards[i].kind === 'cover');
+        imagePreview.classList.toggle('jacky-cover-active', cards[i].kind === 'cover');
         await this.delay(120);
         const blob = await this.capturePreview(imagePreview);
         snapshots.push({ fileName: cards[i].fileName, blob });
@@ -543,7 +543,7 @@ export class RedNoteExporter implements PlatformExporter<RedNotePreparedData> {
       section.setAttribute('data-index', card.kind === 'cover' ? 'cover' : String(index));
 
       if (card.kind === 'cover') {
-        section.classList.add('banpie-cover-section');
+        section.classList.add('jacky-cover-section');
         section.innerHTML = this.renderCoverSection(card, settings);
       } else {
         section.innerHTML = this.renderContentSection(card, settings);
@@ -624,25 +624,25 @@ export class RedNoteExporter implements PlatformExporter<RedNotePreparedData> {
 
   private renderCoverSection(card: RedNoteCard, settings: RedNoteSettings): string {
     const portrait = card.coverImageSrc
-      ? `<div class="banpie-cover-portrait"><img src="${card.coverImageSrc}" alt="${this.escapeHtml(card.title)}"></div>`
+      ? `<div class="jacky-cover-portrait"><img src="${card.coverImageSrc}" alt="${this.escapeHtml(card.title)}"></div>`
       : `
-        <div class="banpie-cover-portrait">
-          <div class="banpie-cover-upload-placeholder">
-            <div class="banpie-cover-upload-icon">✦</div>
-            <div class="banpie-cover-upload-text">${this.escapeHtml(settings.brandTagline)}</div>
+        <div class="jacky-cover-portrait">
+          <div class="jacky-cover-upload-placeholder">
+            <div class="jacky-cover-upload-icon">✦</div>
+            <div class="jacky-cover-upload-text">${this.escapeHtml(settings.brandTagline)}</div>
           </div>
         </div>
       `;
 
     return `
-      <div class="banpie-cover-container">
+      <div class="jacky-cover-container">
         ${portrait}
-        <div class="banpie-cover-content">
-          <div class="banpie-cover-badge">${this.escapeHtml(settings.notesTitle)}</div>
-          <h1 class="banpie-cover-title">${this.escapeHtml(card.title)}</h1>
-          <div class="banpie-cover-summary-container">
-            <div class="banpie-cover-summary-line"></div>
-            <p class="banpie-cover-summary-text">${this.escapeHtml(card.summary || '')}</p>
+        <div class="jacky-cover-content">
+          <div class="jacky-cover-badge">${this.escapeHtml(settings.notesTitle)}</div>
+          <h1 class="jacky-cover-title">${this.escapeHtml(card.title)}</h1>
+          <div class="jacky-cover-summary-container">
+            <div class="jacky-cover-summary-line"></div>
+            <p class="jacky-cover-summary-text">${this.escapeHtml(card.summary || '')}</p>
           </div>
         </div>
       </div>

@@ -4617,8 +4617,8 @@ var RedNoteExporter = class {
       prevButton.classList.toggle("red-nav-hidden", currentIndex === 0);
       nextButton.classList.toggle("red-nav-hidden", currentIndex === sections.length - 1);
       imagePreview.classList.toggle(
-        "banpie-cover-active",
-        sections[currentIndex].classList.contains("banpie-cover-section")
+        "jacky-cover-active",
+        sections[currentIndex].classList.contains("jacky-cover-section")
       );
     };
     prevButton.addEventListener("click", () => {
@@ -4668,7 +4668,7 @@ var RedNoteExporter = class {
       const snapshots = [];
       for (let i = 0; i < cards.length; i++) {
         this.updatePreviewState(exportSurface, i);
-        imagePreview.classList.toggle("banpie-cover-active", cards[i].kind === "cover");
+        imagePreview.classList.toggle("jacky-cover-active", cards[i].kind === "cover");
         await this.delay(120);
         const blob = await this.capturePreview(imagePreview);
         snapshots.push({ fileName: cards[i].fileName, blob });
@@ -4960,7 +4960,7 @@ var RedNoteExporter = class {
       section.className = "red-content-section";
       section.setAttribute("data-index", card.kind === "cover" ? "cover" : String(index));
       if (card.kind === "cover") {
-        section.classList.add("banpie-cover-section");
+        section.classList.add("jacky-cover-section");
         section.innerHTML = this.renderCoverSection(card, settings);
       } else {
         section.innerHTML = this.renderContentSection(card, settings);
@@ -5024,23 +5024,23 @@ var RedNoteExporter = class {
     return `<div class="red-avatar-placeholder">${this.escapeHtml(initial)}</div>`;
   }
   renderCoverSection(card, settings) {
-    const portrait = card.coverImageSrc ? `<div class="banpie-cover-portrait"><img src="${card.coverImageSrc}" alt="${this.escapeHtml(card.title)}"></div>` : `
-        <div class="banpie-cover-portrait">
-          <div class="banpie-cover-upload-placeholder">
-            <div class="banpie-cover-upload-icon">\u2726</div>
-            <div class="banpie-cover-upload-text">${this.escapeHtml(settings.brandTagline)}</div>
+    const portrait = card.coverImageSrc ? `<div class="jacky-cover-portrait"><img src="${card.coverImageSrc}" alt="${this.escapeHtml(card.title)}"></div>` : `
+        <div class="jacky-cover-portrait">
+          <div class="jacky-cover-upload-placeholder">
+            <div class="jacky-cover-upload-icon">\u2726</div>
+            <div class="jacky-cover-upload-text">${this.escapeHtml(settings.brandTagline)}</div>
           </div>
         </div>
       `;
     return `
-      <div class="banpie-cover-container">
+      <div class="jacky-cover-container">
         ${portrait}
-        <div class="banpie-cover-content">
-          <div class="banpie-cover-badge">${this.escapeHtml(settings.notesTitle)}</div>
-          <h1 class="banpie-cover-title">${this.escapeHtml(card.title)}</h1>
-          <div class="banpie-cover-summary-container">
-            <div class="banpie-cover-summary-line"></div>
-            <p class="banpie-cover-summary-text">${this.escapeHtml(card.summary || "")}</p>
+        <div class="jacky-cover-content">
+          <div class="jacky-cover-badge">${this.escapeHtml(settings.notesTitle)}</div>
+          <h1 class="jacky-cover-title">${this.escapeHtml(card.title)}</h1>
+          <div class="jacky-cover-summary-container">
+            <div class="jacky-cover-summary-line"></div>
+            <p class="jacky-cover-summary-text">${this.escapeHtml(card.summary || "")}</p>
           </div>
         </div>
       </div>
@@ -5287,8 +5287,8 @@ var baseDarkVariables = {
   "--rn-placeholder-color": "rgba(255, 255, 255, 0.82)"
 };
 var REDNOTE_TEMPLATE_PRESETS = {
-  "banpie-cover": createTemplate(
-    "banpie-cover",
+  "jacky-cover": createTemplate(
+    "jacky-cover",
     "Jacky \u6A21\u677F",
     "\u5927\u56FE\u5C01\u9762 + \u6781\u7B80\u767D\u8272\u5185\u5BB9\u9875",
     true,
@@ -5330,7 +5330,7 @@ var REDNOTE_TEMPLATE_PRESETS = {
   default: createTemplate(
     "default",
     "\u9ED8\u8BA4\u4E3B\u9898",
-    "\u63A5\u8FD1\u539F\u7248 Banpie \u7684\u6DF1\u8272\u89C2\u611F",
+    "\u6DF1\u8272\u89C2\u611F\uFF0C\u9002\u5408\u6444\u5F71 / \u6545\u4E8B",
     false,
     {
       ...baseDarkVariables,
@@ -5672,7 +5672,7 @@ var REDNOTE_TEMPLATE_PRESETS = {
     }
   )
 };
-var DEFAULT_REDNOTE_TEMPLATE_ID = "banpie-cover";
+var DEFAULT_REDNOTE_TEMPLATE_ID = "jacky-cover";
 function getRedNoteTemplatePreset(id) {
   return REDNOTE_TEMPLATE_PRESETS[id] || REDNOTE_TEMPLATE_PRESETS[DEFAULT_REDNOTE_TEMPLATE_ID];
 }
@@ -5717,7 +5717,7 @@ var REDNOTE_FONT_OPTIONS = [
   }
 ];
 var DEFAULT_REDNOTE_SETTINGS = {
-  templateId: "banpie-cover",
+  templateId: "jacky-cover",
   fontFamily: REDNOTE_FONT_OPTIONS[0].value,
   fontSize: 16,
   userAvatar: "",

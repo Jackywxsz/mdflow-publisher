@@ -83,8 +83,8 @@ const baseDarkVariables: Record<string, string> = {
 };
 
 export const REDNOTE_TEMPLATE_PRESETS: Record<string, RedNoteTemplatePreset> = {
-  'banpie-cover': createTemplate(
-    'banpie-cover',
+  'jacky-cover': createTemplate(
+    'jacky-cover',
     'Jacky 模板',
     '大图封面 + 极简白色内容页',
     true,
@@ -126,7 +126,7 @@ export const REDNOTE_TEMPLATE_PRESETS: Record<string, RedNoteTemplatePreset> = {
   default: createTemplate(
     'default',
     '默认主题',
-    '接近原版 Banpie 的深色观感',
+    '深色观感，适合摄影 / 故事',
     false,
     {
       ...baseDarkVariables,
@@ -469,7 +469,7 @@ export const REDNOTE_TEMPLATE_PRESETS: Record<string, RedNoteTemplatePreset> = {
   ),
 };
 
-export const DEFAULT_REDNOTE_TEMPLATE_ID = 'banpie-cover';
+export const DEFAULT_REDNOTE_TEMPLATE_ID = 'jacky-cover';
 
 export function getRedNoteTemplatePreset(id: string): RedNoteTemplatePreset {
   return REDNOTE_TEMPLATE_PRESETS[id] || REDNOTE_TEMPLATE_PRESETS[DEFAULT_REDNOTE_TEMPLATE_ID];
