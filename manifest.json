@@ -1,0 +1,9 @@
+{
+  "id": "mdflow-publisher",
+  "name": "MDFlow Publisher",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Obsidian 全平台内容分发：微信公众号、X Articles、小红书",
+  "author": "Jackywxsz",
+  "isDesktopOnly": true
+}

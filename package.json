@@ -1,0 +1,23 @@
+{
+  "name": "mdflow-publisher",
+  "version": "1.0.0",
+  "description": "Obsidian 全平台内容分发插件",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "deploy": "npm run build && cp main.js styles.css manifest.json \"${OBSIDIAN_VAULT_PATH}/.obsidian/plugins/mdflow-publisher/\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.2",
+    "obsidian": "latest",
+    "tslib": "^2.6.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "html-to-image": "^1.11.13",
+    "jszip": "^3.10.1"
+  }
+}
