@@ -1,4 +1,4 @@
-import { App, TFile } from 'obsidian';
+import { App, TFile, requestUrl } from 'obsidian';
 
 /**
  * Resolves Obsidian internal image references to absolute paths or base64 data URLs.
@@ -10,7 +10,10 @@ export class ImageResolver {
    * Convert all Obsidian internal image links in HTML to base64 data URIs.
    * Also handles external images by fetching them.
    */
-  async resolveImagesToBase64(html: string, sourceFile: TFile): Promise<string> {
+  async resolveImagesToBase64(
+    html: string,
+    sourceFile: TFile
+  ): Promise<string> {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
     const images = doc.querySelectorAll('img');
@@ -54,7 +57,7 @@ export class ImageResolver {
 
     // Handle external http/https images
     if (src.startsWith('http')) {
-      return this.fetchImageAsBase64(src);
+      return this.fetchImageAsBase64(this.normalizeExternalImageUrl(src));
     }
 
     return null;
@@ -75,9 +78,14 @@ export class ImageResolver {
    * Compresses large images using Canvas (max 1920px, quality 0.85).
    */
   async fetchImageAsBase64(url: string): Promise<string> {
-    const response = await fetch(url);
-    const blob = await response.blob();
+    const blob = this.isExternalUrl(url)
+      ? await this.fetchExternalImageBlob(url)
+      : await this.fetchInternalImageBlob(url);
 
+    return this.blobToDataUrl(blob);
+  }
+
+  private async blobToDataUrl(blob: Blob): Promise<string> {
     // Check if it's a GIF (don't compress animated GIFs)
     if (blob.type === 'image/gif') {
       return new Promise((resolve, reject) => {
@@ -89,6 +97,57 @@ export class ImageResolver {
     }
 
     return this.compressImage(blob);
+  }
+
+  private async fetchExternalImageBlob(url: string): Promise<Blob> {
+    const candidates = this.getExternalImageCandidates(url);
+    let lastError: unknown = null;
+
+    for (const candidate of candidates) {
+      try {
+        const response = await requestUrl({
+          url: candidate,
+          headers: {
+            Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          },
+          throw: true,
+        });
+        const mimeType = this.pickResponseMimeType(response.headers);
+        if (mimeType && !mimeType.startsWith('image/')) {
+          throw new Error(`Unexpected content type: ${mimeType}`);
+        }
+        return new Blob([response.arrayBuffer], { type: mimeType || 'image/png' });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError || new Error('External image request failed');
+  }
+
+  private async fetchInternalImageBlob(url: string): Promise<Blob> {
+    const response = await fetch(url);
+    return response.blob();
+  }
+
+  private pickResponseMimeType(headers: Record<string, string>): string {
+    const contentTypeHeader =
+      headers['content-type'] ||
+      headers['Content-Type'] ||
+      headers['CONTENT-TYPE'] ||
+      '';
+
+    const contentType = contentTypeHeader.split(';')[0]?.trim();
+    return contentType || 'image/png';
+  }
+
+  private getExternalImageCandidates(src: string): string[] {
+    const normalized = this.normalizeExternalImageUrl(src);
+    const noHash = src.split('#')[0];
+
+    return Array.from(
+      new Set([normalized, noHash, src].filter((value) => Boolean(value?.trim())))
+    );
   }
 
   /**
@@ -152,5 +211,25 @@ export class ImageResolver {
     if (src.startsWith('data:image/gif')) return true;
     if (src.toLowerCase().includes('.gif')) return true;
     return false;
+  }
+
+  private isExternalUrl(src: string): boolean {
+    return src.startsWith('http://') || src.startsWith('https://');
+  }
+
+  private normalizeExternalImageUrl(src: string): string {
+    try {
+      const url = new URL(src);
+      url.hash = '';
+
+      if (url.hostname.endsWith('qpic.cn')) {
+        url.searchParams.delete('wx_lazy');
+        url.searchParams.delete('tp');
+      }
+
+      return url.toString();
+    } catch (error) {
+      return src.split('#')[0];
+    }
   }
 }

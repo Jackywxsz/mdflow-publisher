@@ -61,7 +61,10 @@ export class RedNoteExporter implements PlatformExporter<RedNotePreparedData> {
   ): Promise<PreparedPlatformContent<RedNotePreparedData>> {
     const settings = this.redNoteSettings.getSettings();
     const template = this.redNoteSettings.getTemplate(settings.templateId);
-    const htmlWithImages = await this.imageResolver.resolveImagesToBase64(renderedHtml, context.sourceFile);
+    const htmlWithImages = await this.imageResolver.resolveImagesToBase64(
+      renderedHtml,
+      context.sourceFile
+    );
     const doc = parseHtml(htmlWithImages);
 
     stripObsidianArtifacts(doc);
@@ -711,6 +714,7 @@ export class RedNoteExporter implements PlatformExporter<RedNotePreparedData> {
 
   private async capturePreview(imagePreview: HTMLElement): Promise<Blob> {
     await this.waitForImages(imagePreview);
+    await this.rasterizeImagesForCapture(imagePreview);
 
     const blob = await toBlob(imagePreview, {
       cacheBust: true,
@@ -732,13 +736,58 @@ export class RedNoteExporter implements PlatformExporter<RedNotePreparedData> {
     const images = Array.from(root.querySelectorAll('img'));
 
     await Promise.all(
-      images.map((image) => {
-        if (image.complete) return Promise.resolve();
+      images.map(async (image) => {
+        if (image.complete && image.naturalWidth > 0) {
+          if (typeof image.decode === 'function') {
+            try {
+              await image.decode();
+            } catch (error) {
+              // Ignore decode failures and allow fallback handling later.
+            }
+          }
+          return;
+        }
 
         return new Promise<void>((resolve) => {
           image.onload = () => resolve();
           image.onerror = () => resolve();
         });
+      })
+    );
+  }
+
+  private async rasterizeImagesForCapture(root: HTMLElement): Promise<void> {
+    const images = Array.from(root.querySelectorAll('img'));
+
+    await Promise.all(
+      images.map(async (image) => {
+        const src = image.currentSrc || image.getAttribute('src') || '';
+        if (!src || src.startsWith('data:image/png')) {
+          return;
+        }
+
+        const width = image.naturalWidth;
+        const height = image.naturalHeight;
+        if (!width || !height) {
+          return;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        const context = canvas.getContext('2d');
+        if (!context) {
+          return;
+        }
+
+        try {
+          context.drawImage(image, 0, 0, width, height);
+          image.setAttribute('src', canvas.toDataURL('image/png'));
+          image.removeAttribute('srcset');
+        } catch (error) {
+          console.warn('MDFlow: Failed to rasterize image for capture', src, error);
+        }
       })
     );
   }

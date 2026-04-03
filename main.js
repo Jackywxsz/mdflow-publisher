@@ -3172,7 +3172,7 @@ var ImageResolver = class {
       }
     }
     if (src.startsWith("http")) {
-      return this.fetchImageAsBase64(src);
+      return this.fetchImageAsBase64(this.normalizeExternalImageUrl(src));
     }
     return null;
   }
@@ -3190,8 +3190,10 @@ var ImageResolver = class {
    * Compresses large images using Canvas (max 1920px, quality 0.85).
    */
   async fetchImageAsBase64(url) {
-    const response = await fetch(url);
-    const blob = await response.blob();
+    const blob = this.isExternalUrl(url) ? await this.fetchExternalImageBlob(url) : await this.fetchInternalImageBlob(url);
+    return this.blobToDataUrl(blob);
+  }
+  async blobToDataUrl(blob) {
     if (blob.type === "image/gif") {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -3201,6 +3203,46 @@ var ImageResolver = class {
       });
     }
     return this.compressImage(blob);
+  }
+  async fetchExternalImageBlob(url) {
+    const candidates = this.getExternalImageCandidates(url);
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        const response = await (0, import_obsidian2.requestUrl)({
+          url: candidate,
+          headers: {
+            Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+          },
+          throw: true
+        });
+        const mimeType = this.pickResponseMimeType(response.headers);
+        if (mimeType && !mimeType.startsWith("image/")) {
+          throw new Error(`Unexpected content type: ${mimeType}`);
+        }
+        return new Blob([response.arrayBuffer], { type: mimeType || "image/png" });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("External image request failed");
+  }
+  async fetchInternalImageBlob(url) {
+    const response = await fetch(url);
+    return response.blob();
+  }
+  pickResponseMimeType(headers) {
+    var _a;
+    const contentTypeHeader = headers["content-type"] || headers["Content-Type"] || headers["CONTENT-TYPE"] || "";
+    const contentType = (_a = contentTypeHeader.split(";")[0]) == null ? void 0 : _a.trim();
+    return contentType || "image/png";
+  }
+  getExternalImageCandidates(src) {
+    const normalized = this.normalizeExternalImageUrl(src);
+    const noHash = src.split("#")[0];
+    return Array.from(
+      new Set([normalized, noHash, src].filter((value) => Boolean(value == null ? void 0 : value.trim())))
+    );
   }
   /**
    * Compress an image blob using Canvas, max 1920px, quality 0.85.
@@ -3263,6 +3305,22 @@ var ImageResolver = class {
     if (src.toLowerCase().includes(".gif"))
       return true;
     return false;
+  }
+  isExternalUrl(src) {
+    return src.startsWith("http://") || src.startsWith("https://");
+  }
+  normalizeExternalImageUrl(src) {
+    try {
+      const url = new URL(src);
+      url.hash = "";
+      if (url.hostname.endsWith("qpic.cn")) {
+        url.searchParams.delete("wx_lazy");
+        url.searchParams.delete("tp");
+      }
+      return url.toString();
+    } catch (error) {
+      return src.split("#")[0];
+    }
   }
 };
 
@@ -4585,7 +4643,10 @@ var RedNoteExporter = class {
   async prepare(renderedHtml, context) {
     const settings = this.redNoteSettings.getSettings();
     const template = this.redNoteSettings.getTemplate(settings.templateId);
-    const htmlWithImages = await this.imageResolver.resolveImagesToBase64(renderedHtml, context.sourceFile);
+    const htmlWithImages = await this.imageResolver.resolveImagesToBase64(
+      renderedHtml,
+      context.sourceFile
+    );
     const doc = parseHtml(htmlWithImages);
     stripObsidianArtifacts(doc);
     transformTaskLists(doc);
@@ -5099,6 +5160,7 @@ var RedNoteExporter = class {
   }
   async capturePreview(imagePreview) {
     await this.waitForImages(imagePreview);
+    await this.rasterizeImagesForCapture(imagePreview);
     const blob = await toBlob(imagePreview, {
       cacheBust: true,
       quality: 1,
@@ -5115,13 +5177,50 @@ var RedNoteExporter = class {
   async waitForImages(root) {
     const images = Array.from(root.querySelectorAll("img"));
     await Promise.all(
-      images.map((image) => {
-        if (image.complete)
-          return Promise.resolve();
+      images.map(async (image) => {
+        if (image.complete && image.naturalWidth > 0) {
+          if (typeof image.decode === "function") {
+            try {
+              await image.decode();
+            } catch (error) {
+            }
+          }
+          return;
+        }
         return new Promise((resolve) => {
           image.onload = () => resolve();
           image.onerror = () => resolve();
         });
+      })
+    );
+  }
+  async rasterizeImagesForCapture(root) {
+    const images = Array.from(root.querySelectorAll("img"));
+    await Promise.all(
+      images.map(async (image) => {
+        const src = image.currentSrc || image.getAttribute("src") || "";
+        if (!src || src.startsWith("data:image/png")) {
+          return;
+        }
+        const width = image.naturalWidth;
+        const height = image.naturalHeight;
+        if (!width || !height) {
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          return;
+        }
+        try {
+          context.drawImage(image, 0, 0, width, height);
+          image.setAttribute("src", canvas.toDataURL("image/png"));
+          image.removeAttribute("srcset");
+        } catch (error) {
+          console.warn("MDFlow: Failed to rasterize image for capture", src, error);
+        }
       })
     );
   }
@@ -5216,73 +5315,45 @@ var RedNoteAboutModal = class extends import_obsidian4.Modal {
 function createTemplate(id, name, description, showCover, variables) {
   return { id, name, description, showCover, variables };
 }
-var baseLightVariables = {
-  "--rn-frame-bg": "linear-gradient(180deg, #fffaf5 0%, #fff4ea 100%)",
-  "--rn-frame-border": "rgba(193, 122, 78, 0.12)",
-  "--rn-frame-shadow": "0 24px 60px rgba(43, 28, 17, 0.12)",
+function createMinimalTemplate(id, name, description, overrides) {
+  return createTemplate(id, name, description, false, {
+    ...baseMinimalVariables,
+    ...overrides
+  });
+}
+var baseMinimalVariables = {
+  "--rn-frame-bg": "linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%)",
+  "--rn-frame-border": "rgba(15, 23, 42, 0.08)",
+  "--rn-frame-shadow": "0 22px 56px rgba(15, 23, 42, 0.08)",
   "--rn-panel-bg": "#ffffff",
-  "--rn-header-badge-bg": "rgba(191, 96, 46, 0.08)",
-  "--rn-header-badge-color": "#b45309",
-  "--rn-avatar-bg": "linear-gradient(135deg, #f8d6b0 0%, #f5b98a 100%)",
-  "--rn-avatar-color": "#7c2d12",
-  "--rn-name-color": "#3f2a1f",
-  "--rn-id-color": "rgba(92, 56, 40, 0.74)",
-  "--rn-time-color": "rgba(92, 56, 40, 0.56)",
-  "--rn-kicker-bg": "rgba(191, 96, 46, 0.08)",
-  "--rn-kicker-color": "#b45309",
-  "--rn-title-color": "#4a2818",
-  "--rn-body-color": "#5b3726",
-  "--rn-heading-color": "#7c2d12",
-  "--rn-link-color": "#c2410c",
-  "--rn-link-border": "rgba(194, 65, 12, 0.24)",
-  "--rn-quote-bg": "rgba(255, 255, 255, 0.78)",
-  "--rn-quote-border": "rgba(193, 122, 78, 0.14)",
-  "--rn-code-bg": "#2f211a",
-  "--rn-code-color": "#f8e7d8",
-  "--rn-table-border": "rgba(193, 122, 78, 0.18)",
-  "--rn-table-header-bg": "rgba(191, 96, 46, 0.08)",
-  "--rn-footer-color": "rgba(104, 67, 47, 0.72)",
-  "--rn-footer-border": "rgba(193, 122, 78, 0.12)",
-  "--rn-cover-portrait-bg": "linear-gradient(160deg, #5e3a2b 0%, #2b1c15 100%)",
+  "--rn-header-badge-bg": "rgba(15, 23, 42, 0.05)",
+  "--rn-header-badge-color": "#374151",
+  "--rn-avatar-bg": "linear-gradient(135deg, #eef2f7 0%, #dfe5ee 100%)",
+  "--rn-avatar-color": "#334155",
+  "--rn-name-color": "#1f2937",
+  "--rn-id-color": "rgba(31, 41, 55, 0.68)",
+  "--rn-time-color": "rgba(31, 41, 55, 0.46)",
+  "--rn-kicker-bg": "rgba(15, 23, 42, 0.05)",
+  "--rn-kicker-color": "#334155",
+  "--rn-title-color": "#111827",
+  "--rn-body-color": "#374151",
+  "--rn-heading-color": "#111827",
+  "--rn-link-color": "#0f766e",
+  "--rn-link-border": "rgba(15, 118, 110, 0.24)",
+  "--rn-quote-bg": "#f8fafc",
+  "--rn-quote-border": "rgba(15, 23, 42, 0.08)",
+  "--rn-code-bg": "#f3f4f6",
+  "--rn-code-color": "#374151",
+  "--rn-table-border": "rgba(148, 163, 184, 0.22)",
+  "--rn-table-header-bg": "#f8fafc",
+  "--rn-footer-color": "rgba(51, 65, 85, 0.66)",
+  "--rn-footer-border": "rgba(148, 163, 184, 0.18)",
+  "--rn-footer-bg": "rgba(15, 23, 42, 0.03)",
+  "--rn-cover-portrait-bg": "linear-gradient(160deg, #334155 0%, #111827 100%)",
   "--rn-cover-content-bg": "#ffffff",
-  "--rn-cover-title-color": "#1f130d",
-  "--rn-cover-summary-color": "#5f4638",
-  "--rn-cover-line": "#3f2a1f",
-  "--rn-placeholder-bg": "rgba(255, 255, 255, 0.06)",
-  "--rn-placeholder-color": "rgba(255, 255, 255, 0.82)"
-};
-var baseDarkVariables = {
-  "--rn-frame-bg": "linear-gradient(180deg, #17181d 0%, #101116 100%)",
-  "--rn-frame-border": "rgba(90, 95, 115, 0.24)",
-  "--rn-frame-shadow": "0 28px 68px rgba(10, 11, 15, 0.46)",
-  "--rn-panel-bg": "rgba(19, 21, 29, 0.92)",
-  "--rn-header-badge-bg": "rgba(120, 130, 160, 0.16)",
-  "--rn-header-badge-color": "#d7dcf5",
-  "--rn-avatar-bg": "linear-gradient(135deg, #3c4357 0%, #202533 100%)",
-  "--rn-avatar-color": "#eef3ff",
-  "--rn-name-color": "#f2f5ff",
-  "--rn-id-color": "rgba(199, 207, 231, 0.82)",
-  "--rn-time-color": "rgba(166, 174, 199, 0.62)",
-  "--rn-kicker-bg": "rgba(120, 130, 160, 0.18)",
-  "--rn-kicker-color": "#d7dcf5",
-  "--rn-title-color": "#f2f5ff",
-  "--rn-body-color": "#d2d8eb",
-  "--rn-heading-color": "#ffffff",
-  "--rn-link-color": "#8db4ff",
-  "--rn-link-border": "rgba(141, 180, 255, 0.32)",
-  "--rn-quote-bg": "rgba(34, 38, 52, 0.88)",
-  "--rn-quote-border": "rgba(120, 130, 160, 0.22)",
-  "--rn-code-bg": "#0f1320",
-  "--rn-code-color": "#edf2ff",
-  "--rn-table-border": "rgba(120, 130, 160, 0.22)",
-  "--rn-table-header-bg": "rgba(120, 130, 160, 0.14)",
-  "--rn-footer-color": "rgba(188, 196, 221, 0.74)",
-  "--rn-footer-border": "rgba(120, 130, 160, 0.2)",
-  "--rn-cover-portrait-bg": "linear-gradient(160deg, #2a3144 0%, #0f121b 100%)",
-  "--rn-cover-content-bg": "#171a23",
-  "--rn-cover-title-color": "#f6f8ff",
-  "--rn-cover-summary-color": "#d0d7ec",
-  "--rn-cover-line": "#9ab3ff",
+  "--rn-cover-title-color": "#111827",
+  "--rn-cover-summary-color": "#4b5563",
+  "--rn-cover-line": "#1f2937",
   "--rn-placeholder-bg": "rgba(255, 255, 255, 0.06)",
   "--rn-placeholder-color": "rgba(255, 255, 255, 0.82)"
 };
@@ -5293,33 +5364,13 @@ var REDNOTE_TEMPLATE_PRESETS = {
     "\u5927\u56FE\u5C01\u9762 + \u6781\u7B80\u767D\u8272\u5185\u5BB9\u9875",
     true,
     {
-      ...baseLightVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%)",
-      "--rn-frame-border": "rgba(15, 23, 42, 0.08)",
-      "--rn-frame-shadow": "0 22px 56px rgba(15, 23, 42, 0.08)",
-      "--rn-panel-bg": "#ffffff",
-      "--rn-header-badge-bg": "rgba(15, 23, 42, 0.05)",
+      ...baseMinimalVariables,
+      "--rn-header-badge-bg": "rgba(15, 23, 42, 0.06)",
       "--rn-header-badge-color": "#1f2937",
-      "--rn-avatar-bg": "linear-gradient(135deg, #eef2f7 0%, #dfe5ee 100%)",
-      "--rn-avatar-color": "#334155",
-      "--rn-name-color": "#1f2937",
-      "--rn-id-color": "rgba(31, 41, 55, 0.68)",
-      "--rn-time-color": "rgba(31, 41, 55, 0.46)",
       "--rn-kicker-bg": "rgba(15, 23, 42, 0.05)",
       "--rn-kicker-color": "#334155",
-      "--rn-title-color": "#111827",
-      "--rn-body-color": "#374151",
-      "--rn-heading-color": "#111827",
       "--rn-link-color": "#0f766e",
       "--rn-link-border": "rgba(15, 118, 110, 0.24)",
-      "--rn-quote-bg": "#f8fafc",
-      "--rn-quote-border": "rgba(15, 23, 42, 0.08)",
-      "--rn-code-bg": "#f1f5f9",
-      "--rn-code-color": "#334155",
-      "--rn-table-border": "rgba(148, 163, 184, 0.22)",
-      "--rn-table-header-bg": "#f8fafc",
-      "--rn-footer-color": "rgba(51, 65, 85, 0.66)",
-      "--rn-footer-border": "rgba(148, 163, 184, 0.18)",
       "--rn-cover-portrait-bg": "linear-gradient(160deg, #334155 0%, #111827 100%)",
       "--rn-cover-content-bg": "#ffffff",
       "--rn-cover-title-color": "#111827",
@@ -5327,348 +5378,313 @@ var REDNOTE_TEMPLATE_PRESETS = {
       "--rn-cover-line": "#1f2937"
     }
   ),
-  default: createTemplate(
+  default: createMinimalTemplate(
     "default",
     "\u9ED8\u8BA4\u4E3B\u9898",
-    "\u6DF1\u8272\u89C2\u611F\uFF0C\u9002\u5408\u6444\u5F71 / \u6545\u4E8B",
-    false,
+    "Banpie \u98CE\u683C\u7684\u6781\u7B80\u767D\u5361",
     {
-      ...baseDarkVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #17181c 0%, #121318 100%)",
-      "--rn-panel-bg": "#1c1c1f"
+      "--rn-frame-bg": "linear-gradient(180deg, #fcfcfb 0%, #f6f5f2 100%)",
+      "--rn-panel-bg": "#fffdfa",
+      "--rn-header-badge-bg": "rgba(84, 76, 68, 0.06)",
+      "--rn-header-badge-color": "#544c44",
+      "--rn-title-color": "#24201c",
+      "--rn-body-color": "#4b5563",
+      "--rn-heading-color": "#24201c",
+      "--rn-link-color": "#8b5e3c",
+      "--rn-link-border": "rgba(139, 94, 60, 0.18)",
+      "--rn-footer-bg": "rgba(84, 76, 68, 0.03)"
     }
   ),
-  minimal: createTemplate(
+  minimal: createMinimalTemplate(
     "minimal",
     "\u6781\u7B80\u4E3B\u9898",
-    "\u6D45\u8272\u7559\u767D\uFF0C\u9002\u5408\u77E5\u8BC6\u5361\u7247",
-    false,
+    "\u5E72\u51C0\u7559\u767D\uFF0C\u9ED1\u7070\u6587\u672C",
     {
-      ...baseLightVariables,
       "--rn-frame-bg": "linear-gradient(180deg, #ffffff 0%, #fbfbfb 100%)",
-      "--rn-frame-border": "rgba(15, 23, 42, 0.08)",
-      "--rn-frame-shadow": "0 22px 56px rgba(15, 23, 42, 0.08)",
-      "--rn-header-badge-bg": "rgba(15, 23, 42, 0.05)",
-      "--rn-header-badge-color": "#1f2937",
-      "--rn-avatar-bg": "linear-gradient(135deg, #eef2f7 0%, #dfe5ee 100%)",
-      "--rn-avatar-color": "#334155",
-      "--rn-name-color": "#1f2937",
-      "--rn-id-color": "rgba(31, 41, 55, 0.68)",
-      "--rn-time-color": "rgba(31, 41, 55, 0.46)",
-      "--rn-kicker-bg": "rgba(15, 23, 42, 0.05)",
-      "--rn-kicker-color": "#334155",
+      "--rn-panel-bg": "#ffffff",
       "--rn-title-color": "#111827",
       "--rn-body-color": "#374151",
       "--rn-heading-color": "#111827",
       "--rn-link-color": "#0f766e",
-      "--rn-link-border": "rgba(15, 118, 110, 0.24)",
-      "--rn-quote-bg": "#f8fafc",
-      "--rn-quote-border": "rgba(15, 23, 42, 0.08)",
-      "--rn-code-bg": "#f1f5f9",
-      "--rn-code-color": "#334155",
-      "--rn-table-border": "rgba(148, 163, 184, 0.22)",
-      "--rn-table-header-bg": "#f8fafc",
-      "--rn-footer-color": "rgba(51, 65, 85, 0.66)",
-      "--rn-footer-border": "rgba(148, 163, 184, 0.18)"
+      "--rn-link-border": "rgba(15, 118, 110, 0.24)"
     }
   ),
-  elegant: createTemplate(
+  elegant: createMinimalTemplate(
     "elegant",
-    "\u4F18\u96C5\u6697\u8272",
-    "\u4F4E\u9971\u548C\u7D2B\u9ED1\u8272\u8C03",
-    false,
+    "\u4F18\u96C5\u7070\u7C89",
+    "\u7C73\u767D\u5E95\uFF0C\u7070\u7C89\u6807\u9898",
     {
-      ...baseDarkVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #181420 0%, #12101a 100%)",
-      "--rn-frame-border": "rgba(136, 112, 180, 0.2)",
-      "--rn-header-badge-bg": "rgba(180, 144, 255, 0.12)",
-      "--rn-header-badge-color": "#dbcff6",
-      "--rn-avatar-bg": "linear-gradient(135deg, #3b3050 0%, #241c31 100%)",
-      "--rn-avatar-color": "#efe5ff",
-      "--rn-name-color": "#e7dcfb",
-      "--rn-id-color": "rgba(196, 184, 221, 0.76)",
-      "--rn-time-color": "rgba(163, 147, 201, 0.58)",
-      "--rn-kicker-bg": "rgba(180, 144, 255, 0.12)",
-      "--rn-kicker-color": "#d8c7ff",
-      "--rn-link-color": "#c5a9ff",
-      "--rn-link-border": "rgba(197, 169, 255, 0.28)",
-      "--rn-quote-bg": "rgba(39, 31, 53, 0.88)",
-      "--rn-quote-border": "rgba(180, 144, 255, 0.18)",
-      "--rn-code-bg": "#241d32",
-      "--rn-code-color": "#e5dbfa",
-      "--rn-table-border": "rgba(136, 112, 180, 0.22)",
-      "--rn-table-header-bg": "rgba(60, 48, 84, 0.66)",
-      "--rn-footer-color": "rgba(196, 184, 221, 0.74)",
-      "--rn-footer-border": "rgba(136, 112, 180, 0.18)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #322742 0%, #15111d 100%)",
-      "--rn-cover-content-bg": "#181420",
-      "--rn-cover-title-color": "#efe7ff",
-      "--rn-cover-summary-color": "#c7b8e5",
-      "--rn-cover-line": "#b490ff"
+      "--rn-frame-bg": "linear-gradient(180deg, #fffdfd 0%, #f8f4f6 100%)",
+      "--rn-panel-bg": "#fffefe",
+      "--rn-header-badge-bg": "rgba(168, 120, 148, 0.08)",
+      "--rn-header-badge-color": "#8f5f7c",
+      "--rn-avatar-bg": "linear-gradient(135deg, #f4dde7 0%, #ecd0de 100%)",
+      "--rn-avatar-color": "#7c4562",
+      "--rn-name-color": "#43313b",
+      "--rn-id-color": "rgba(92, 67, 80, 0.68)",
+      "--rn-time-color": "rgba(92, 67, 80, 0.46)",
+      "--rn-kicker-bg": "rgba(168, 120, 148, 0.08)",
+      "--rn-kicker-color": "#8f5f7c",
+      "--rn-title-color": "#6f4058",
+      "--rn-body-color": "#51424a",
+      "--rn-heading-color": "#6f4058",
+      "--rn-link-color": "#9b5d7c",
+      "--rn-link-border": "rgba(155, 93, 124, 0.18)",
+      "--rn-quote-bg": "#fbf7f9",
+      "--rn-quote-border": "rgba(168, 120, 148, 0.12)",
+      "--rn-table-border": "rgba(168, 120, 148, 0.16)",
+      "--rn-table-header-bg": "#faf3f6",
+      "--rn-footer-color": "rgba(111, 64, 88, 0.62)",
+      "--rn-footer-border": "rgba(168, 120, 148, 0.14)",
+      "--rn-footer-bg": "rgba(168, 120, 148, 0.03)"
     }
   ),
-  cyber: createTemplate(
+  cyber: createMinimalTemplate(
     "cyber",
-    "\u8D5B\u535A\u670B\u514B",
-    "\u9AD8\u5BF9\u6BD4\u9713\u8679\u98CE",
-    false,
+    "\u8D5B\u535A\u8584\u8377",
+    "\u6D45\u5E95\u9713\u8679\u70B9\u7F00\uFF0C\u4F46\u4FDD\u6301\u6781\u7B80",
     {
-      ...baseLightVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)",
-      "--rn-frame-border": "rgba(0, 255, 255, 0.24)",
-      "--rn-frame-shadow": "0 28px 70px rgba(0, 255, 255, 0.1)",
-      "--rn-header-badge-bg": "rgba(255, 0, 255, 0.08)",
-      "--rn-header-badge-color": "#ff00a8",
-      "--rn-avatar-bg": "linear-gradient(135deg, #ff00ff 0%, #00ffff 100%)",
-      "--rn-avatar-color": "#ffffff",
-      "--rn-name-color": "#ff00a8",
-      "--rn-id-color": "#00a7b4",
-      "--rn-time-color": "rgba(0, 167, 180, 0.74)",
-      "--rn-kicker-bg": "rgba(0, 255, 255, 0.08)",
-      "--rn-kicker-color": "#00a7b4",
-      "--rn-title-color": "#ff00a8",
-      "--rn-body-color": "#243042",
-      "--rn-heading-color": "#00a7b4",
-      "--rn-link-color": "#00bfa6",
-      "--rn-link-border": "rgba(0, 191, 166, 0.24)",
-      "--rn-quote-bg": "#f8fafc",
-      "--rn-quote-border": "rgba(255, 0, 255, 0.16)",
-      "--rn-code-bg": "#0e1626",
-      "--rn-code-color": "#c9fff4",
-      "--rn-table-border": "rgba(0, 255, 255, 0.18)",
-      "--rn-table-header-bg": "rgba(0, 255, 255, 0.08)",
-      "--rn-footer-color": "rgba(0, 128, 128, 0.74)",
-      "--rn-footer-border": "rgba(0, 255, 255, 0.18)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #0d1320 0%, #1b0c26 50%, #10192f 100%)",
-      "--rn-cover-content-bg": "#ffffff",
-      "--rn-cover-title-color": "#ff00a8",
-      "--rn-cover-summary-color": "#3b4658",
-      "--rn-cover-line": "#00ffff",
-      "--rn-placeholder-bg": "rgba(255, 255, 255, 0.08)"
+      "--rn-frame-bg": "linear-gradient(180deg, #fbfeff 0%, #f3fbff 100%)",
+      "--rn-panel-bg": "#ffffff",
+      "--rn-frame-border": "rgba(0, 180, 216, 0.14)",
+      "--rn-header-badge-bg": "rgba(255, 0, 168, 0.06)",
+      "--rn-header-badge-color": "#d61f8d",
+      "--rn-avatar-bg": "linear-gradient(135deg, #d6fbff 0%, #c8f1ff 100%)",
+      "--rn-avatar-color": "#0b7285",
+      "--rn-name-color": "#0f172a",
+      "--rn-id-color": "rgba(11, 114, 133, 0.74)",
+      "--rn-time-color": "rgba(11, 114, 133, 0.52)",
+      "--rn-kicker-bg": "rgba(0, 180, 216, 0.08)",
+      "--rn-kicker-color": "#0b7285",
+      "--rn-title-color": "#d61f8d",
+      "--rn-body-color": "#334155",
+      "--rn-heading-color": "#0b7285",
+      "--rn-link-color": "#0284c7",
+      "--rn-link-border": "rgba(2, 132, 199, 0.2)",
+      "--rn-quote-bg": "#f7fcff",
+      "--rn-quote-border": "rgba(0, 180, 216, 0.14)",
+      "--rn-table-border": "rgba(0, 180, 216, 0.16)",
+      "--rn-table-header-bg": "rgba(0, 180, 216, 0.06)",
+      "--rn-footer-color": "rgba(2, 132, 199, 0.64)",
+      "--rn-footer-border": "rgba(0, 180, 216, 0.14)",
+      "--rn-footer-bg": "rgba(0, 180, 216, 0.03)"
     }
   ),
-  warm: createTemplate(
+  warm: createMinimalTemplate(
     "warm",
     "\u6696\u9633\u6587\u827A",
     "\u7C73\u8272\u7EB8\u5F20\u548C\u68D5\u8272\u5B57",
-    true,
     {
-      ...baseLightVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #fffaf5 0%, #fff0df 100%)",
-      "--rn-frame-border": "rgba(184, 115, 51, 0.18)",
+      "--rn-frame-bg": "linear-gradient(180deg, #fffaf5 0%, #fff2e6 100%)",
+      "--rn-panel-bg": "#fffdf9",
+      "--rn-frame-border": "rgba(184, 115, 51, 0.16)",
+      "--rn-header-badge-bg": "rgba(184, 115, 51, 0.08)",
+      "--rn-header-badge-color": "#9a5b2e",
+      "--rn-avatar-bg": "linear-gradient(135deg, #f6dfc8 0%, #efd0b0 100%)",
+      "--rn-avatar-color": "#8b4513",
+      "--rn-name-color": "#5f381c",
+      "--rn-id-color": "rgba(95, 56, 28, 0.68)",
+      "--rn-time-color": "rgba(95, 56, 28, 0.46)",
+      "--rn-kicker-bg": "rgba(184, 115, 51, 0.08)",
+      "--rn-kicker-color": "#9a5b2e",
       "--rn-title-color": "#7a3f16",
       "--rn-body-color": "#68462d",
       "--rn-heading-color": "#7a3f16",
       "--rn-link-color": "#b55f1d",
-      "--rn-link-border": "rgba(181, 95, 29, 0.24)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #86543a 0%, #382318 100%)",
-      "--rn-cover-content-bg": "#fffaf5",
-      "--rn-cover-title-color": "#7a3f16",
-      "--rn-cover-summary-color": "#76563f",
-      "--rn-cover-line": "#b87333"
+      "--rn-link-border": "rgba(181, 95, 29, 0.18)",
+      "--rn-quote-bg": "#fff8f1",
+      "--rn-quote-border": "rgba(184, 115, 51, 0.12)",
+      "--rn-table-border": "rgba(184, 115, 51, 0.16)",
+      "--rn-table-header-bg": "#fff4ea",
+      "--rn-footer-color": "rgba(122, 63, 22, 0.62)",
+      "--rn-footer-border": "rgba(184, 115, 51, 0.14)",
+      "--rn-footer-bg": "rgba(184, 115, 51, 0.03)"
     }
   ),
-  forest: createTemplate(
+  forest: createMinimalTemplate(
     "forest",
     "\u68EE\u6797\u6C27\u6C14",
-    "\u7EFF\u8272\u81EA\u7136\u7CFB",
-    true,
+    "\u6D45\u7EFF\u5E95\uFF0C\u6DF1\u7EFF\u5B57",
     {
-      ...baseLightVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #f6fff9 0%, #ebfff0 100%)",
-      "--rn-frame-border": "rgba(46, 204, 113, 0.16)",
-      "--rn-header-badge-bg": "rgba(46, 204, 113, 0.08)",
-      "--rn-header-badge-color": "#178a4a",
-      "--rn-avatar-bg": "linear-gradient(135deg, #8ae7b2 0%, #42c971 100%)",
-      "--rn-avatar-color": "#0f5132",
+      "--rn-frame-bg": "linear-gradient(180deg, #f8fff9 0%, #eefaf1 100%)",
+      "--rn-panel-bg": "#fcfffc",
+      "--rn-frame-border": "rgba(42, 157, 92, 0.14)",
+      "--rn-header-badge-bg": "rgba(42, 157, 92, 0.08)",
+      "--rn-header-badge-color": "#1f7a47",
+      "--rn-avatar-bg": "linear-gradient(135deg, #d8f2df 0%, #cbead5 100%)",
+      "--rn-avatar-color": "#166534",
       "--rn-name-color": "#14532d",
-      "--rn-id-color": "rgba(21, 83, 45, 0.7)",
-      "--rn-time-color": "rgba(21, 83, 45, 0.52)",
-      "--rn-kicker-bg": "rgba(46, 204, 113, 0.08)",
-      "--rn-kicker-color": "#178a4a",
+      "--rn-id-color": "rgba(20, 83, 45, 0.68)",
+      "--rn-time-color": "rgba(20, 83, 45, 0.46)",
+      "--rn-kicker-bg": "rgba(42, 157, 92, 0.08)",
+      "--rn-kicker-color": "#1f7a47",
       "--rn-title-color": "#166534",
-      "--rn-body-color": "#2d4e3c",
+      "--rn-body-color": "#355344",
       "--rn-heading-color": "#166534",
-      "--rn-link-color": "#178a4a",
-      "--rn-link-border": "rgba(23, 138, 74, 0.24)",
-      "--rn-quote-border": "rgba(46, 204, 113, 0.16)",
-      "--rn-table-border": "rgba(46, 204, 113, 0.18)",
-      "--rn-table-header-bg": "rgba(46, 204, 113, 0.08)",
-      "--rn-footer-color": "rgba(22, 101, 52, 0.72)",
-      "--rn-footer-border": "rgba(46, 204, 113, 0.16)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #18452c 0%, #0d2015 100%)",
-      "--rn-cover-title-color": "#155e33",
-      "--rn-cover-summary-color": "#43604e",
-      "--rn-cover-line": "#2ecc71"
+      "--rn-link-color": "#1f7a47",
+      "--rn-link-border": "rgba(31, 122, 71, 0.18)",
+      "--rn-quote-bg": "#f6fcf8",
+      "--rn-quote-border": "rgba(42, 157, 92, 0.12)",
+      "--rn-table-border": "rgba(42, 157, 92, 0.16)",
+      "--rn-table-header-bg": "#eff9f2",
+      "--rn-footer-color": "rgba(22, 101, 52, 0.62)",
+      "--rn-footer-border": "rgba(42, 157, 92, 0.14)",
+      "--rn-footer-bg": "rgba(42, 157, 92, 0.03)"
     }
   ),
-  ocean: createTemplate(
+  ocean: createMinimalTemplate(
     "ocean",
     "\u6D77\u98CE\u84DD\u8C03",
-    "\u6DF1\u84DD\u79D1\u6280\u4E0E\u6D77\u6D0B\u611F",
-    true,
+    "\u6D45\u84DD\u5E95\uFF0C\u6D77\u519B\u84DD\u6587\u672C",
     {
-      ...baseDarkVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #0f1f38 0%, #09152a 100%)",
-      "--rn-frame-border": "rgba(64, 169, 255, 0.18)",
-      "--rn-header-badge-bg": "rgba(64, 169, 255, 0.14)",
-      "--rn-header-badge-color": "#9ed5ff",
-      "--rn-avatar-bg": "linear-gradient(135deg, #3cc1ff 0%, #1668dc 100%)",
-      "--rn-avatar-color": "#f0fbff",
-      "--rn-name-color": "#e6f5ff",
-      "--rn-id-color": "rgba(157, 213, 255, 0.8)",
-      "--rn-time-color": "rgba(145, 213, 255, 0.58)",
-      "--rn-kicker-bg": "rgba(64, 169, 255, 0.14)",
-      "--rn-kicker-color": "#9ed5ff",
-      "--rn-link-color": "#79c8ff",
-      "--rn-link-border": "rgba(121, 200, 255, 0.28)",
-      "--rn-quote-border": "rgba(64, 169, 255, 0.18)",
-      "--rn-code-bg": "#0b1730",
-      "--rn-code-color": "#dff6ff",
-      "--rn-table-border": "rgba(64, 169, 255, 0.2)",
-      "--rn-table-header-bg": "rgba(64, 169, 255, 0.12)",
-      "--rn-footer-color": "rgba(186, 231, 255, 0.72)",
-      "--rn-footer-border": "rgba(64, 169, 255, 0.18)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #123a63 0%, #08111f 100%)",
-      "--rn-cover-title-color": "#eef9ff",
-      "--rn-cover-summary-color": "#b8dbef",
-      "--rn-cover-line": "#40a9ff"
+      "--rn-frame-bg": "linear-gradient(180deg, #f7fbff 0%, #eef6ff 100%)",
+      "--rn-panel-bg": "#fcfeff",
+      "--rn-frame-border": "rgba(64, 125, 201, 0.14)",
+      "--rn-header-badge-bg": "rgba(64, 125, 201, 0.08)",
+      "--rn-header-badge-color": "#2f5d95",
+      "--rn-avatar-bg": "linear-gradient(135deg, #d9ecff 0%, #c7e2ff 100%)",
+      "--rn-avatar-color": "#1d4ed8",
+      "--rn-name-color": "#183153",
+      "--rn-id-color": "rgba(24, 49, 83, 0.68)",
+      "--rn-time-color": "rgba(24, 49, 83, 0.46)",
+      "--rn-kicker-bg": "rgba(64, 125, 201, 0.08)",
+      "--rn-kicker-color": "#2f5d95",
+      "--rn-title-color": "#1e3a5f",
+      "--rn-body-color": "#41556b",
+      "--rn-heading-color": "#1e3a5f",
+      "--rn-link-color": "#2563eb",
+      "--rn-link-border": "rgba(37, 99, 235, 0.18)",
+      "--rn-quote-bg": "#f8fbff",
+      "--rn-quote-border": "rgba(64, 125, 201, 0.12)",
+      "--rn-table-border": "rgba(64, 125, 201, 0.16)",
+      "--rn-table-header-bg": "#eef5ff",
+      "--rn-footer-color": "rgba(30, 58, 95, 0.62)",
+      "--rn-footer-border": "rgba(64, 125, 201, 0.14)",
+      "--rn-footer-bg": "rgba(64, 125, 201, 0.03)"
     }
   ),
-  sakura: createTemplate(
+  sakura: createMinimalTemplate(
     "sakura",
     "\u6A31\u82B1\u98DE\u821E",
-    "\u7C89\u8272\u68A6\u5E7B\u7CFB",
-    true,
+    "\u6D45\u7C89\u5E95\uFF0C\u67D4\u548C\u8393\u7C89\u5B57",
     {
-      ...baseDarkVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #2a1f25 0%, #181218 100%)",
-      "--rn-frame-border": "rgba(255, 182, 193, 0.2)",
-      "--rn-header-badge-bg": "rgba(255, 182, 193, 0.12)",
-      "--rn-header-badge-color": "#ffd5de",
-      "--rn-avatar-bg": "linear-gradient(135deg, #ffc9d4 0%, #ff8fab 100%)",
-      "--rn-avatar-color": "#7a2137",
-      "--rn-name-color": "#ffdce5",
-      "--rn-id-color": "rgba(255, 182, 193, 0.78)",
-      "--rn-time-color": "rgba(255, 141, 161, 0.58)",
-      "--rn-kicker-bg": "rgba(255, 182, 193, 0.12)",
-      "--rn-kicker-color": "#ffdce5",
-      "--rn-link-color": "#ffb6c1",
-      "--rn-link-border": "rgba(255, 182, 193, 0.28)",
-      "--rn-quote-border": "rgba(255, 141, 161, 0.18)",
-      "--rn-code-bg": "#2f2328",
-      "--rn-code-color": "#ffe5eb",
-      "--rn-table-border": "rgba(255, 182, 193, 0.2)",
-      "--rn-table-header-bg": "rgba(255, 182, 193, 0.12)",
-      "--rn-footer-color": "rgba(255, 209, 217, 0.74)",
-      "--rn-footer-border": "rgba(255, 182, 193, 0.18)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #4a2e38 0%, #1c1317 100%)",
-      "--rn-cover-title-color": "#fff0f4",
-      "--rn-cover-summary-color": "#f6cbd4",
-      "--rn-cover-line": "#ff8da1"
+      "--rn-frame-bg": "linear-gradient(180deg, #fffafb 0%, #fff1f5 100%)",
+      "--rn-panel-bg": "#fffdfd",
+      "--rn-frame-border": "rgba(231, 120, 146, 0.14)",
+      "--rn-header-badge-bg": "rgba(231, 120, 146, 0.08)",
+      "--rn-header-badge-color": "#b54f6f",
+      "--rn-avatar-bg": "linear-gradient(135deg, #ffe2ea 0%, #ffd5e1 100%)",
+      "--rn-avatar-color": "#b54f6f",
+      "--rn-name-color": "#5c3341",
+      "--rn-id-color": "rgba(92, 51, 65, 0.68)",
+      "--rn-time-color": "rgba(92, 51, 65, 0.46)",
+      "--rn-kicker-bg": "rgba(231, 120, 146, 0.08)",
+      "--rn-kicker-color": "#b54f6f",
+      "--rn-title-color": "#c05276",
+      "--rn-body-color": "#5b4550",
+      "--rn-heading-color": "#c05276",
+      "--rn-link-color": "#db5f83",
+      "--rn-link-border": "rgba(219, 95, 131, 0.18)",
+      "--rn-quote-bg": "#fff8fa",
+      "--rn-quote-border": "rgba(231, 120, 146, 0.12)",
+      "--rn-table-border": "rgba(231, 120, 146, 0.16)",
+      "--rn-table-header-bg": "#fff2f6",
+      "--rn-footer-color": "rgba(192, 82, 118, 0.62)",
+      "--rn-footer-border": "rgba(231, 120, 146, 0.14)",
+      "--rn-footer-bg": "rgba(231, 120, 146, 0.03)"
     }
   ),
-  starry: createTemplate(
+  starry: createMinimalTemplate(
     "starry",
     "\u661F\u7A7A\u68A6\u5883",
-    "\u6DF1\u7D2B\u661F\u7A7A\u6C1B\u56F4",
-    true,
+    "\u85B0\u8863\u8349\u7070\u5E95\uFF0C\u67D4\u7D2B\u6587\u672C",
     {
-      ...baseDarkVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #121527 0%, #090b14 100%)",
-      "--rn-frame-border": "rgba(147, 112, 219, 0.22)",
-      "--rn-header-badge-bg": "rgba(147, 112, 219, 0.14)",
-      "--rn-header-badge-color": "#d9c9ff",
-      "--rn-avatar-bg": "linear-gradient(135deg, #c6a8ff 0%, #7c5ed1 100%)",
-      "--rn-avatar-color": "#211336",
-      "--rn-name-color": "#efe8ff",
-      "--rn-id-color": "rgba(177, 156, 217, 0.8)",
-      "--rn-time-color": "rgba(138, 123, 181, 0.58)",
-      "--rn-kicker-bg": "rgba(147, 112, 219, 0.14)",
-      "--rn-kicker-color": "#d9c9ff",
-      "--rn-link-color": "#cbb4ff",
-      "--rn-link-border": "rgba(203, 180, 255, 0.28)",
-      "--rn-quote-border": "rgba(177, 156, 217, 0.2)",
-      "--rn-code-bg": "#171a2c",
-      "--rn-code-color": "#efe6ff",
-      "--rn-table-border": "rgba(147, 112, 219, 0.2)",
-      "--rn-table-header-bg": "rgba(147, 112, 219, 0.12)",
-      "--rn-footer-color": "rgba(216, 206, 246, 0.74)",
-      "--rn-footer-border": "rgba(147, 112, 219, 0.18)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #2b2351 0%, #0b0d18 100%)",
-      "--rn-cover-title-color": "#f5efff",
-      "--rn-cover-summary-color": "#d9ccf0",
-      "--rn-cover-line": "#b19cd9"
+      "--rn-frame-bg": "linear-gradient(180deg, #fbfaff 0%, #f3f0fb 100%)",
+      "--rn-panel-bg": "#fefeff",
+      "--rn-frame-border": "rgba(143, 120, 196, 0.14)",
+      "--rn-header-badge-bg": "rgba(143, 120, 196, 0.08)",
+      "--rn-header-badge-color": "#7358a5",
+      "--rn-avatar-bg": "linear-gradient(135deg, #ece4fb 0%, #ded4f6 100%)",
+      "--rn-avatar-color": "#6b46c1",
+      "--rn-name-color": "#423556",
+      "--rn-id-color": "rgba(66, 53, 86, 0.68)",
+      "--rn-time-color": "rgba(66, 53, 86, 0.46)",
+      "--rn-kicker-bg": "rgba(143, 120, 196, 0.08)",
+      "--rn-kicker-color": "#7358a5",
+      "--rn-title-color": "#6d4db0",
+      "--rn-body-color": "#51485f",
+      "--rn-heading-color": "#6d4db0",
+      "--rn-link-color": "#7c5ac2",
+      "--rn-link-border": "rgba(124, 90, 194, 0.18)",
+      "--rn-quote-bg": "#faf8fe",
+      "--rn-quote-border": "rgba(143, 120, 196, 0.12)",
+      "--rn-table-border": "rgba(143, 120, 196, 0.16)",
+      "--rn-table-header-bg": "#f3effb",
+      "--rn-footer-color": "rgba(109, 77, 176, 0.62)",
+      "--rn-footer-border": "rgba(143, 120, 196, 0.14)",
+      "--rn-footer-bg": "rgba(143, 120, 196, 0.03)"
     }
   ),
-  metal: createTemplate(
+  metal: createMinimalTemplate(
     "metal",
     "\u91D1\u5C5E\u79D1\u6280",
-    "\u94F6\u9ED1\u9AD8\u5BF9\u6BD4\u79D1\u6280\u98CE",
-    false,
+    "\u94F6\u7070\u5E95\uFF0C\u51B7\u8C03\u6DF1\u7070\u5B57",
     {
-      ...baseDarkVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #20242b 0%, #161a21 100%)",
-      "--rn-frame-border": "rgba(160, 160, 160, 0.24)",
-      "--rn-header-badge-bg": "rgba(160, 160, 160, 0.14)",
-      "--rn-header-badge-color": "#e3e3e3",
-      "--rn-avatar-bg": "linear-gradient(135deg, #f0f0f0 0%, #7e8794 100%)",
-      "--rn-avatar-color": "#1b1d22",
-      "--rn-name-color": "#f5f5f5",
-      "--rn-id-color": "rgba(192, 192, 192, 0.76)",
-      "--rn-time-color": "rgba(160, 160, 160, 0.56)",
-      "--rn-kicker-bg": "rgba(160, 160, 160, 0.14)",
-      "--rn-kicker-color": "#e3e3e3",
-      "--rn-link-color": "#9ec2ff",
-      "--rn-link-border": "rgba(158, 194, 255, 0.28)",
-      "--rn-quote-border": "rgba(77, 142, 231, 0.18)",
-      "--rn-code-bg": "#141821",
-      "--rn-code-color": "#f0f3f8",
-      "--rn-table-border": "rgba(160, 160, 160, 0.2)",
-      "--rn-table-header-bg": "rgba(160, 160, 160, 0.12)",
-      "--rn-footer-color": "rgba(220, 220, 220, 0.72)",
-      "--rn-footer-border": "rgba(160, 160, 160, 0.18)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #38404d 0%, #13161b 100%)",
-      "--rn-cover-title-color": "#f0f0f0",
-      "--rn-cover-summary-color": "#d0d7e1",
-      "--rn-cover-line": "#4d8ee7"
+      "--rn-frame-bg": "linear-gradient(180deg, #fbfcfd 0%, #f1f3f5 100%)",
+      "--rn-panel-bg": "#ffffff",
+      "--rn-frame-border": "rgba(120, 128, 140, 0.16)",
+      "--rn-header-badge-bg": "rgba(120, 128, 140, 0.08)",
+      "--rn-header-badge-color": "#525a66",
+      "--rn-avatar-bg": "linear-gradient(135deg, #edf1f5 0%, #dce3ea 100%)",
+      "--rn-avatar-color": "#475569",
+      "--rn-name-color": "#1f2937",
+      "--rn-id-color": "rgba(31, 41, 55, 0.68)",
+      "--rn-time-color": "rgba(31, 41, 55, 0.46)",
+      "--rn-kicker-bg": "rgba(120, 128, 140, 0.08)",
+      "--rn-kicker-color": "#525a66",
+      "--rn-title-color": "#28323c",
+      "--rn-body-color": "#4b5563",
+      "--rn-heading-color": "#28323c",
+      "--rn-link-color": "#4d8ee7",
+      "--rn-link-border": "rgba(77, 142, 231, 0.18)",
+      "--rn-quote-bg": "#f7f9fb",
+      "--rn-quote-border": "rgba(120, 128, 140, 0.12)",
+      "--rn-table-border": "rgba(120, 128, 140, 0.16)",
+      "--rn-table-header-bg": "#eef2f6",
+      "--rn-footer-color": "rgba(71, 85, 105, 0.62)",
+      "--rn-footer-border": "rgba(120, 128, 140, 0.14)",
+      "--rn-footer-bg": "rgba(120, 128, 140, 0.03)"
     }
   ),
-  yueling: createTemplate(
+  yueling: createMinimalTemplate(
     "yueling",
     "\u60A6\u7075\u96C5\u68D5",
-    "\u5496\u8272\u6697\u8C03\uFF0C\u9002\u5408\u60C5\u7EEA\u6587\u5B57",
-    true,
+    "\u6D45\u5496\u5E95\uFF0C\u6DF1\u68D5\u6587\u5B57",
     {
-      ...baseDarkVariables,
-      "--rn-frame-bg": "linear-gradient(180deg, #1e1a18 0%, #141110 100%)",
-      "--rn-frame-border": "rgba(197, 117, 18, 0.2)",
-      "--rn-header-badge-bg": "rgba(197, 117, 18, 0.12)",
-      "--rn-header-badge-color": "#f0d1aa",
-      "--rn-avatar-bg": "linear-gradient(135deg, #d7a56f 0%, #8b5a2b 100%)",
-      "--rn-avatar-color": "#2b1a0d",
-      "--rn-name-color": "#faf5ef",
-      "--rn-id-color": "rgba(216, 188, 150, 0.76)",
-      "--rn-time-color": "rgba(184, 150, 106, 0.56)",
-      "--rn-kicker-bg": "rgba(197, 117, 18, 0.14)",
-      "--rn-kicker-color": "#f0d1aa",
-      "--rn-title-color": "#fff5ea",
-      "--rn-body-color": "#f3e4d2",
-      "--rn-heading-color": "#ffd7ad",
-      "--rn-link-color": "#e7ad62",
-      "--rn-link-border": "rgba(231, 173, 98, 0.28)",
-      "--rn-quote-border": "rgba(197, 117, 18, 0.18)",
-      "--rn-code-bg": "#201915",
-      "--rn-code-color": "#fceede",
-      "--rn-table-border": "rgba(197, 117, 18, 0.2)",
-      "--rn-table-header-bg": "rgba(197, 117, 18, 0.12)",
-      "--rn-footer-color": "rgba(240, 209, 170, 0.74)",
-      "--rn-footer-border": "rgba(197, 117, 18, 0.18)",
-      "--rn-cover-portrait-bg": "linear-gradient(160deg, #5b3a22 0%, #1d1511 100%)",
-      "--rn-cover-content-bg": "#1e1a18",
-      "--rn-cover-title-color": "#fff5ea",
-      "--rn-cover-summary-color": "#e8d2b8",
-      "--rn-cover-line": "#c57512"
+      "--rn-frame-bg": "linear-gradient(180deg, #fffaf7 0%, #f7f1eb 100%)",
+      "--rn-panel-bg": "#fffdfb",
+      "--rn-frame-border": "rgba(155, 107, 71, 0.16)",
+      "--rn-header-badge-bg": "rgba(155, 107, 71, 0.08)",
+      "--rn-header-badge-color": "#8b5e3c",
+      "--rn-avatar-bg": "linear-gradient(135deg, #f3e2d3 0%, #e9d3bf 100%)",
+      "--rn-avatar-color": "#7a4b2f",
+      "--rn-name-color": "#4a3328",
+      "--rn-id-color": "rgba(74, 51, 40, 0.68)",
+      "--rn-time-color": "rgba(74, 51, 40, 0.46)",
+      "--rn-kicker-bg": "rgba(155, 107, 71, 0.08)",
+      "--rn-kicker-color": "#8b5e3c",
+      "--rn-title-color": "#6f4b33",
+      "--rn-body-color": "#5b463a",
+      "--rn-heading-color": "#6f4b33",
+      "--rn-link-color": "#b26a3c",
+      "--rn-link-border": "rgba(178, 106, 60, 0.18)",
+      "--rn-quote-bg": "#fbf6f1",
+      "--rn-quote-border": "rgba(155, 107, 71, 0.12)",
+      "--rn-table-border": "rgba(155, 107, 71, 0.16)",
+      "--rn-table-header-bg": "#f8f0e7",
+      "--rn-footer-color": "rgba(111, 75, 51, 0.62)",
+      "--rn-footer-border": "rgba(155, 107, 71, 0.14)",
+      "--rn-footer-bg": "rgba(155, 107, 71, 0.03)"
     }
   )
 };
@@ -5761,6 +5777,8 @@ var MDFlowView = class extends import_obsidian5.ItemView {
     this.preparedContent = null;
     this.activeFile = null;
     this.redNoteGuidePopoverEl = null;
+    this.previewRunId = 0;
+    this.editorPreviewDebounce = null;
     this.converter = new MarkdownConverter(this.app);
     this.themeManager = new ThemeManager();
     this.imageResolver = new ImageResolver(this.app);
@@ -5859,7 +5877,7 @@ var MDFlowView = class extends import_obsidian5.ItemView {
     this.createCompactAction(actionsRow, "\u4E0A\u4F20\u5934\u50CF", async () => {
       await this.handleRedNoteImageUpload("userAvatar");
     });
-    this.createCompactAction(actionsRow, "\u4E0A\u4F20\u5C01\u9762", async () => {
+    this.redNoteCoverUploadBtnEl = this.createCompactAction(actionsRow, "\u4E0A\u4F20\u5C01\u9762", async () => {
       await this.handleRedNoteImageUpload("coverImage");
     });
     this.createCompactAction(actionsRow, "\u66F4\u591A\u8BBE\u7F6E", () => {
@@ -5874,13 +5892,15 @@ var MDFlowView = class extends import_obsidian5.ItemView {
       type: "button",
       text: "\u4E0B\u8F7D\u5F53\u524D\u9875"
     });
-    downloadBtn.addEventListener("click", () => this.handleDownloadCurrentPage());
+    this.redNoteDownloadBtnEl = downloadBtn;
+    downloadBtn.addEventListener("click", () => void this.handleDownloadCurrentPage());
     const exportAllBtn = rightGroup.createEl("button", {
       cls: "mdflow-rn-bar-primary-btn",
       type: "button",
       text: "\u5BFC\u51FA\u5168\u90E8\u9875"
     });
-    exportAllBtn.addEventListener("click", () => this.handleExport());
+    this.redNoteExportAllBtnEl = exportAllBtn;
+    exportAllBtn.addEventListener("click", () => void this.handleExport());
   }
   renderGlobalBottomBar(container) {
     container.empty();
@@ -6041,8 +6061,20 @@ var MDFlowView = class extends import_obsidian5.ItemView {
       })
     );
     this.registerEvent(
-      this.app.workspace.on("editor-change", async () => {
-        await this.updatePreview();
+      this.app.workspace.on("editor-change", (editor, info) => {
+        const file = info.file;
+        if (!file || file.extension !== "md") {
+          return;
+        }
+        this.activeFile = file;
+        if (this.editorPreviewDebounce !== null) {
+          window.clearTimeout(this.editorPreviewDebounce);
+        }
+        const liveMarkdown = editor.getValue();
+        this.editorPreviewDebounce = window.setTimeout(() => {
+          this.editorPreviewDebounce = null;
+          void this.updatePreview(liveMarkdown, file);
+        }, 120);
       })
     );
     this.registerEvent(
@@ -6056,8 +6088,10 @@ var MDFlowView = class extends import_obsidian5.ItemView {
   }
   syncRedNoteControls() {
     const settings = this.redNoteSettings.getSettings();
+    const template = this.redNoteSettings.getTemplate(settings.templateId);
     this.redNoteTemplateSelectEl.value = settings.templateId;
     this.redNoteFontSizeInputEl.value = String(settings.fontSize);
+    this.redNoteCoverUploadBtnEl.style.display = template.showCover ? "" : "none";
     const fontValue = settings.fontFamily;
     const hasFontOption = Array.from(this.redNoteFontSelectEl.options).some(
       (option) => option.value === fontValue
@@ -6101,25 +6135,31 @@ var MDFlowView = class extends import_obsidian5.ItemView {
     });
     input.click();
   }
-  async updatePreview() {
-    const activeFile = this.app.workspace.getActiveFile();
+  async updatePreview(markdownOverride, fileOverride) {
+    const activeFile = fileOverride || this.app.workspace.getActiveFile();
     if (!activeFile || activeFile.extension !== "md") {
       this.activeFile = null;
       this.renderedHtml = "";
       this.showPlaceholder();
       return;
     }
+    const runId = ++this.previewRunId;
     this.activeFile = activeFile;
     try {
-      const markdown = await this.app.vault.read(activeFile);
-      this.renderedHtml = await this.converter.convertToHtml(markdown, activeFile);
-      await this.refreshPreview();
+      const markdown = markdownOverride != null ? markdownOverride : await this.readCurrentMarkdown(activeFile);
+      if (runId !== this.previewRunId)
+        return;
+      const renderedHtml = await this.converter.convertToHtml(markdown, activeFile);
+      if (runId !== this.previewRunId)
+        return;
+      this.renderedHtml = renderedHtml;
+      await this.refreshPreview(runId);
     } catch (error) {
       console.error("MDFlow: Preview update failed", error);
       new import_obsidian5.Notice("\u9884\u89C8\u66F4\u65B0\u5931\u8D25");
     }
   }
-  async refreshPreview() {
+  async refreshPreview(runId = ++this.previewRunId) {
     var _a;
     if (!this.renderedHtml || !this.activeFile) {
       this.showPlaceholder();
@@ -6129,9 +6169,12 @@ var MDFlowView = class extends import_obsidian5.ItemView {
     if (!exporter)
       return;
     const context = this.createContext();
-    this.preparedContent = await exporter.prepare(this.renderedHtml, context);
-    this.previewEl.innerHTML = this.preparedContent.previewHtml;
-    await ((_a = exporter.mountPreview) == null ? void 0 : _a.call(exporter, this.previewEl, this.preparedContent, context));
+    const preparedContent = await exporter.prepare(this.renderedHtml, context);
+    if (runId !== this.previewRunId)
+      return;
+    this.preparedContent = preparedContent;
+    this.previewEl.innerHTML = preparedContent.previewHtml;
+    await ((_a = exporter.mountPreview) == null ? void 0 : _a.call(exporter, this.previewEl, preparedContent, context));
   }
   showPlaceholder() {
     this.preparedContent = null;
@@ -6149,6 +6192,7 @@ var MDFlowView = class extends import_obsidian5.ItemView {
       return;
     }
     try {
+      this.setButtonLoading(this.redNoteDownloadBtnEl, "\u4E0B\u8F7D\u4E2D...");
       const title = this.activeFile.basename;
       const indicator = this.previewEl.querySelector(".red-page-indicator");
       const pageNum = ((_a = indicator == null ? void 0 : indicator.textContent) == null ? void 0 : _a.split("/")[0]) || "1";
@@ -6157,6 +6201,8 @@ var MDFlowView = class extends import_obsidian5.ItemView {
     } catch (error) {
       console.error("Download current page failed:", error);
       new import_obsidian5.Notice("\u4E0B\u8F7D\u5931\u8D25");
+    } finally {
+      this.resetButtonLoading(this.redNoteDownloadBtnEl, "\u4E0B\u8F7D\u5F53\u524D\u9875");
     }
   }
   async handleExport() {
@@ -6176,12 +6222,38 @@ var MDFlowView = class extends import_obsidian5.ItemView {
       new import_obsidian5.Notice("\u6CA1\u6709\u5185\u5BB9\u53EF\u5BFC\u51FA");
       return;
     }
-    const result = await exporter.export(this.preparedContent, this.createContext());
-    if (result.success) {
-      new import_obsidian5.Notice(result.message);
-    } else {
-      new import_obsidian5.Notice(result.message, 5e3);
+    const actionButton = this.currentPlatform === "rednote" ? this.redNoteExportAllBtnEl : this.exportBtnEl;
+    const pendingText = this.currentPlatform === "rednote" ? "\u5BFC\u51FA\u4E2D..." : "\u5904\u7406\u4E2D...";
+    const idleText = this.currentPlatform === "rednote" ? "\u5BFC\u51FA\u5168\u90E8\u9875" : this.exportBtnEl.textContent || "\u5BFC\u51FA";
+    try {
+      this.setButtonLoading(actionButton, pendingText);
+      if (this.currentPlatform === "rednote") {
+        new import_obsidian5.Notice("\u6B63\u5728\u5BFC\u51FA\u5168\u90E8\u9875\uFF0C\u8BF7\u7A0D\u5019");
+      }
+      const result = await exporter.export(this.preparedContent, this.createContext());
+      if (result.success) {
+        new import_obsidian5.Notice(result.message);
+      } else {
+        new import_obsidian5.Notice(result.message, 5e3);
+      }
+    } catch (error) {
+      console.error("Export failed:", error);
+      new import_obsidian5.Notice("\u5BFC\u51FA\u5931\u8D25", 5e3);
+    } finally {
+      this.resetButtonLoading(actionButton, idleText);
     }
+  }
+  setButtonLoading(button, text) {
+    if (!button)
+      return;
+    button.disabled = true;
+    button.textContent = text;
+  }
+  resetButtonLoading(button, text) {
+    if (!button)
+      return;
+    button.disabled = false;
+    button.textContent = text;
   }
   createContext() {
     if (!this.activeFile) {
@@ -6193,7 +6265,33 @@ var MDFlowView = class extends import_obsidian5.ItemView {
       title: this.activeFile.basename
     };
   }
+  async readCurrentMarkdown(file) {
+    const liveMarkdown = this.getLiveMarkdownContent(file);
+    if (liveMarkdown !== null) {
+      return liveMarkdown;
+    }
+    return this.app.vault.read(file);
+  }
+  getLiveMarkdownContent(file) {
+    var _a, _b;
+    const activeMarkdownView = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
+    if (((_a = activeMarkdownView == null ? void 0 : activeMarkdownView.file) == null ? void 0 : _a.path) === file.path) {
+      return activeMarkdownView.editor.getValue();
+    }
+    const markdownLeaves = this.app.workspace.getLeavesOfType("markdown");
+    for (const leaf of markdownLeaves) {
+      const view = leaf.view;
+      if (view instanceof import_obsidian5.MarkdownView && ((_b = view.file) == null ? void 0 : _b.path) === file.path) {
+        return view.editor.getValue();
+      }
+    }
+    return null;
+  }
   async onClose() {
+    if (this.editorPreviewDebounce !== null) {
+      window.clearTimeout(this.editorPreviewDebounce);
+      this.editorPreviewDebounce = null;
+    }
     this.converter.dispose();
   }
 };

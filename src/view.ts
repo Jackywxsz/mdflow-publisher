@@ -1,4 +1,4 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf } from 'obsidian';
+import { ItemView, MarkdownView, Notice, TFile, WorkspaceLeaf } from 'obsidian';
 import { MarkdownConverter } from './converter';
 import { ThemeManager } from './themes/theme-manager';
 import { ImageResolver } from './images/image-resolver';
@@ -40,7 +40,12 @@ export class MDFlowView extends ItemView {
   private redNoteTemplateSelectEl!: HTMLSelectElement;
   private redNoteFontSelectEl!: HTMLSelectElement;
   private redNoteFontSizeInputEl!: HTMLInputElement;
+  private redNoteCoverUploadBtnEl!: HTMLButtonElement;
+  private redNoteDownloadBtnEl!: HTMLButtonElement;
+  private redNoteExportAllBtnEl!: HTMLButtonElement;
   private redNoteGuidePopoverEl: HTMLElement | null = null;
+  private previewRunId = 0;
+  private editorPreviewDebounce: number | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -169,7 +174,7 @@ export class MDFlowView extends ItemView {
     this.createCompactAction(actionsRow, '上传头像', async () => {
       await this.handleRedNoteImageUpload('userAvatar');
     });
-    this.createCompactAction(actionsRow, '上传封面', async () => {
+    this.redNoteCoverUploadBtnEl = this.createCompactAction(actionsRow, '上传封面', async () => {
       await this.handleRedNoteImageUpload('coverImage');
     });
     this.createCompactAction(actionsRow, '更多设置', () => {
@@ -187,14 +192,16 @@ export class MDFlowView extends ItemView {
       type: 'button',
       text: '下载当前页',
     });
-    downloadBtn.addEventListener('click', () => this.handleDownloadCurrentPage());
+    this.redNoteDownloadBtnEl = downloadBtn;
+    downloadBtn.addEventListener('click', () => void this.handleDownloadCurrentPage());
 
     const exportAllBtn = rightGroup.createEl('button', {
       cls: 'mdflow-rn-bar-primary-btn',
       type: 'button',
       text: '导出全部页',
     });
-    exportAllBtn.addEventListener('click', () => this.handleExport());
+    this.redNoteExportAllBtnEl = exportAllBtn;
+    exportAllBtn.addEventListener('click', () => void this.handleExport());
   }
 
   private renderGlobalBottomBar(container: HTMLElement): void {
@@ -389,8 +396,23 @@ export class MDFlowView extends ItemView {
     );
 
     this.registerEvent(
-      this.app.workspace.on('editor-change', async () => {
-        await this.updatePreview();
+      this.app.workspace.on('editor-change', (editor, info) => {
+        const file = info.file;
+        if (!file || file.extension !== 'md') {
+          return;
+        }
+
+        this.activeFile = file;
+
+        if (this.editorPreviewDebounce !== null) {
+          window.clearTimeout(this.editorPreviewDebounce);
+        }
+
+        const liveMarkdown = editor.getValue();
+        this.editorPreviewDebounce = window.setTimeout(() => {
+          this.editorPreviewDebounce = null;
+          void this.updatePreview(liveMarkdown, file);
+        }, 120);
       })
     );
 
@@ -407,9 +429,11 @@ export class MDFlowView extends ItemView {
 
   private syncRedNoteControls(): void {
     const settings = this.redNoteSettings.getSettings();
+    const template = this.redNoteSettings.getTemplate(settings.templateId);
 
     this.redNoteTemplateSelectEl.value = settings.templateId;
     this.redNoteFontSizeInputEl.value = String(settings.fontSize);
+    this.redNoteCoverUploadBtnEl.style.display = template.showCover ? '' : 'none';
 
     const fontValue = settings.fontFamily;
     const hasFontOption = Array.from(this.redNoteFontSelectEl.options).some(
@@ -461,8 +485,8 @@ export class MDFlowView extends ItemView {
     input.click();
   }
 
-  private async updatePreview(): Promise<void> {
-    const activeFile = this.app.workspace.getActiveFile();
+  private async updatePreview(markdownOverride?: string, fileOverride?: TFile): Promise<void> {
+    const activeFile = fileOverride || this.app.workspace.getActiveFile();
     if (!activeFile || activeFile.extension !== 'md') {
       this.activeFile = null;
       this.renderedHtml = '';
@@ -470,19 +494,25 @@ export class MDFlowView extends ItemView {
       return;
     }
 
+    const runId = ++this.previewRunId;
     this.activeFile = activeFile;
 
     try {
-      const markdown = await this.app.vault.read(activeFile);
-      this.renderedHtml = await this.converter.convertToHtml(markdown, activeFile);
-      await this.refreshPreview();
+      const markdown = markdownOverride ?? await this.readCurrentMarkdown(activeFile);
+      if (runId !== this.previewRunId) return;
+
+      const renderedHtml = await this.converter.convertToHtml(markdown, activeFile);
+      if (runId !== this.previewRunId) return;
+
+      this.renderedHtml = renderedHtml;
+      await this.refreshPreview(runId);
     } catch (error) {
       console.error('MDFlow: Preview update failed', error);
       new Notice('预览更新失败');
     }
   }
 
-  private async refreshPreview(): Promise<void> {
+  private async refreshPreview(runId = ++this.previewRunId): Promise<void> {
     if (!this.renderedHtml || !this.activeFile) {
       this.showPlaceholder();
       return;
@@ -492,9 +522,12 @@ export class MDFlowView extends ItemView {
     if (!exporter) return;
 
     const context = this.createContext();
-    this.preparedContent = await exporter.prepare(this.renderedHtml, context);
-    this.previewEl.innerHTML = this.preparedContent.previewHtml;
-    await exporter.mountPreview?.(this.previewEl, this.preparedContent, context);
+    const preparedContent = await exporter.prepare(this.renderedHtml, context);
+    if (runId !== this.previewRunId) return;
+
+    this.preparedContent = preparedContent;
+    this.previewEl.innerHTML = preparedContent.previewHtml;
+    await exporter.mountPreview?.(this.previewEl, preparedContent, context);
   }
 
   private showPlaceholder(): void {
@@ -515,6 +548,7 @@ export class MDFlowView extends ItemView {
     }
 
     try {
+      this.setButtonLoading(this.redNoteDownloadBtnEl, '下载中...');
       const title = this.activeFile.basename;
       const indicator = this.previewEl.querySelector('.red-page-indicator');
       const pageNum = indicator?.textContent?.split('/')[0] || '1';
@@ -523,6 +557,8 @@ export class MDFlowView extends ItemView {
     } catch (error) {
       console.error('Download current page failed:', error);
       new Notice('下载失败');
+    } finally {
+      this.resetButtonLoading(this.redNoteDownloadBtnEl, '下载当前页');
     }
   }
 
@@ -547,12 +583,43 @@ export class MDFlowView extends ItemView {
       return;
     }
 
-    const result = await exporter.export(this.preparedContent, this.createContext());
-    if (result.success) {
-      new Notice(result.message);
-    } else {
-      new Notice(result.message, 5000);
+    const actionButton =
+      this.currentPlatform === 'rednote' ? this.redNoteExportAllBtnEl : this.exportBtnEl;
+    const pendingText =
+      this.currentPlatform === 'rednote' ? '导出中...' : '处理中...';
+    const idleText =
+      this.currentPlatform === 'rednote' ? '导出全部页' : this.exportBtnEl.textContent || '导出';
+
+    try {
+      this.setButtonLoading(actionButton, pendingText);
+      if (this.currentPlatform === 'rednote') {
+        new Notice('正在导出全部页，请稍候');
+      }
+
+      const result = await exporter.export(this.preparedContent, this.createContext());
+      if (result.success) {
+        new Notice(result.message);
+      } else {
+        new Notice(result.message, 5000);
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+      new Notice('导出失败', 5000);
+    } finally {
+      this.resetButtonLoading(actionButton, idleText);
     }
+  }
+
+  private setButtonLoading(button: HTMLButtonElement | undefined, text: string): void {
+    if (!button) return;
+    button.disabled = true;
+    button.textContent = text;
+  }
+
+  private resetButtonLoading(button: HTMLButtonElement | undefined, text: string): void {
+    if (!button) return;
+    button.disabled = false;
+    button.textContent = text;
   }
 
   private createContext(): PlatformRenderContext {
@@ -567,7 +634,37 @@ export class MDFlowView extends ItemView {
     };
   }
 
+  private async readCurrentMarkdown(file: TFile): Promise<string> {
+    const liveMarkdown = this.getLiveMarkdownContent(file);
+    if (liveMarkdown !== null) {
+      return liveMarkdown;
+    }
+
+    return this.app.vault.read(file);
+  }
+
+  private getLiveMarkdownContent(file: TFile): string | null {
+    const activeMarkdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (activeMarkdownView?.file?.path === file.path) {
+      return activeMarkdownView.editor.getValue();
+    }
+
+    const markdownLeaves = this.app.workspace.getLeavesOfType('markdown');
+    for (const leaf of markdownLeaves) {
+      const view = leaf.view;
+      if (view instanceof MarkdownView && view.file?.path === file.path) {
+        return view.editor.getValue();
+      }
+    }
+
+    return null;
+  }
+
   async onClose(): Promise<void> {
+    if (this.editorPreviewDebounce !== null) {
+      window.clearTimeout(this.editorPreviewDebounce);
+      this.editorPreviewDebounce = null;
+    }
     this.converter.dispose();
   }
 }
