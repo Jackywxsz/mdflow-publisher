@@ -7,7 +7,7 @@
 ### 微信公众号
 
 - Markdown 转公众号可粘贴 HTML
-- 19 种排版主题
+- 6 种排版主题
 - 图片自动转 Base64，复制后可直接粘贴到公众号编辑器
 - 兼容 Obsidian 原生渲染链路，支持内部图片、任务列表、嵌入等常见写法
 
@@ -28,15 +28,16 @@
 
 ### 手动安装
 
-1. 下载仓库中的 `main.js`、`styles.css`、`manifest.json`
-2. 放到你的 Vault 目录：
+1. 前往 [Releases](https://github.com/Jackywxsz/mdflow-publisher/releases) 页面下载最新发布包
+2. 安装时只需要 `main.js`、`styles.css`、`manifest.json` 这 3 个文件
+3. 如果你下载的是压缩包，解压后把这 3 个文件放到你的 Vault 目录：
 
 ```text
 .obsidian/plugins/mdflow-publisher/
 ```
 
-3. 重启 Obsidian
-4. 在 `设置 -> 第三方插件` 中启用 `MDFlow Publisher`
+4. 重启 Obsidian
+5. 在 `设置 -> 第三方插件` 中启用 `MDFlow Publisher`
 
 ### 开发模式
 
@@ -50,7 +51,7 @@ npm run dev
 ## 使用方式
 
 1. 打开一个 Markdown 文件
-2. 打开右侧 `MDFlow Publisher` 面板
+2. 点击左侧边栏图标，打开右侧 `MDFlow Publisher` 面板
 3. 选择目标平台
 4. 根据平台导出：
 
@@ -103,15 +104,6 @@ npm run dev
 - 极少数外链图片图床可能不稳定，建议优先使用 Obsidian 本地图片或稳定 CDN
 - 小红书目前更适合图文卡片导出，不是所见即所得设计器
 
-## 适合录屏演示的口径
-
-你可以直接这样介绍：
-
-- 在 Obsidian 里写一份 Markdown，同一份内容可同时分发到公众号、X 和小红书
-- 小红书使用 `##` 控制标题分节，用 `---` 控制强制分页
-- 只要写作结构清晰，就能快速生成一组可下载的图文卡片
-- 如果某一页内容太满，只需要手动补一个分页符即可微调
-
 ## 开发
 
 ```bash
@@ -134,12 +126,6 @@ npm run deploy
 - Obsidian `MarkdownRenderer`
 - `html-to-image`
 - `jszip`
-
-## 路线图
-
-- 继续优化小红书分页的稳定性和可控性
-- 增加更明确的导流尾页 / 作者页导出能力
-- 补齐社区插件发布所需的 `versions.json`、Release 流程和提交材料
 
 ## License
 
