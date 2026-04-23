@@ -3131,6 +3131,7 @@ var import_obsidian2 = require("obsidian");
 var ImageResolver = class {
   constructor(app) {
     this.app = app;
+    this.imageDataUrlCache = /* @__PURE__ */ new Map();
   }
   /**
    * Convert all Obsidian internal image links in HTML to base64 data URIs.
@@ -3190,8 +3191,31 @@ var ImageResolver = class {
    * Compresses large images using Canvas (max 1920px, quality 0.85).
    */
   async fetchImageAsBase64(url) {
+    if (this.isExternalUrl(url)) {
+      const cacheKey = this.normalizeExternalImageUrl(url);
+      const cached = this.imageDataUrlCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+      const request = this.fetchExternalImageBlob(url).then((blob2) => this.blobToDataUrl(blob2)).catch((error) => {
+        this.imageDataUrlCache.delete(cacheKey);
+        throw error;
+      });
+      this.imageDataUrlCache.set(cacheKey, request);
+      this.pruneImageCache();
+      return request;
+    }
     const blob = this.isExternalUrl(url) ? await this.fetchExternalImageBlob(url) : await this.fetchInternalImageBlob(url);
     return this.blobToDataUrl(blob);
+  }
+  pruneImageCache() {
+    const maxCachedImages = 120;
+    while (this.imageDataUrlCache.size > maxCachedImages) {
+      const firstKey = this.imageDataUrlCache.keys().next().value;
+      if (!firstKey)
+        return;
+      this.imageDataUrlCache.delete(firstKey);
+    }
   }
   async blobToDataUrl(blob) {
     if (blob.type === "image/gif") {
@@ -4626,12 +4650,7 @@ async function toBlob(node, options = {}) {
 // src/exporters/rednote-exporter.ts
 var import_jszip = __toESM(require_jszip_min());
 var IMAGE_PLACEHOLDER = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-var VERIFIED_BADGE_SVG = `
-  <svg viewBox="0 0 24 24" class="red-verified-icon-svg" aria-hidden="true">
-    <path fill="#1d9bf0" d="M22.25 12c0-.59-.33-1.12-.85-1.39l-1.46-.76.28-1.62c.1-.58-.1-1.16-.53-1.56a1.7 1.7 0 0 0-1.58-.43l-1.59.37-.93-1.37a1.73 1.73 0 0 0-2.87 0l-.93 1.37-1.59-.37a1.7 1.7 0 0 0-1.58.43c-.43.4-.63.98-.53 1.56l.28 1.62-1.46.76A1.56 1.56 0 0 0 1.75 12c0 .59.33 1.12.85 1.39l1.46.76-.28 1.62c-.1.58.1 1.16.53 1.56.43.4 1.02.57 1.58.43l1.59-.37.93 1.37a1.73 1.73 0 0 0 2.87 0l.93-1.37 1.59.37c.56.14 1.15-.03 1.58-.43.43-.4.63-.98.53-1.56l-.28-1.62 1.46-.76c.52-.27.85-.8.85-1.39Z"/>
-    <path fill="#fff" d="m10.44 14.82-2.22-2.2 1.08-1.09 1.14 1.13 4.13-4.18 1.1 1.08-5.23 5.26Z"/>
-  </svg>
-`;
+var VERIFIED_BADGE_IMAGE_SRC = "data:image/png;base64,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";
 var RedNoteExporter = class {
   constructor(imageResolver, redNoteSettings) {
     this.imageResolver = imageResolver;
@@ -5058,7 +5077,9 @@ var RedNoteExporter = class {
           <div class="red-user-meta">
             <div class="red-user-name-container">
               <div class="red-user-name">${this.escapeHtml(settings.userName)}</div>
-              <span class="red-verified-icon">${VERIFIED_BADGE_SVG}</span>
+              <span class="red-verified-icon">
+                <img class="red-verified-icon-image" src="${VERIFIED_BADGE_IMAGE_SRC}" alt="\u8BA4\u8BC1">
+              </span>
             </div>
             <div class="red-user-id">${this.escapeHtml(settings.userId)}</div>
           </div>
@@ -5987,7 +6008,7 @@ var MDFlowView = class extends import_obsidian5.ItemView {
         if (!Number.isNaN(parsed) && parsed >= 12 && parsed <= 28) {
           void onChange(input.value);
         }
-      }, 400);
+      }, 160);
     };
     input.addEventListener("change", () => {
       if (debounceTimer)
@@ -6050,11 +6071,16 @@ var MDFlowView = class extends import_obsidian5.ItemView {
   registerEvents() {
     this.registerEvent(
       this.app.workspace.on("file-open", async (file) => {
+        this.cancelEditorPreviewDebounce();
         if (file && file.extension === "md") {
+          this.previewRunId += 1;
           this.activeFile = file;
-          await this.updatePreview();
+          this.renderedHtml = "";
+          this.showLoading("\u6B63\u5728\u751F\u6210\u6392\u7248\u9884\u89C8...");
+          await this.updatePreview(void 0, file);
           return;
         }
+        this.previewRunId += 1;
         this.activeFile = null;
         this.renderedHtml = "";
         this.showPlaceholder();
@@ -6066,15 +6092,17 @@ var MDFlowView = class extends import_obsidian5.ItemView {
         if (!file || file.extension !== "md") {
           return;
         }
-        this.activeFile = file;
-        if (this.editorPreviewDebounce !== null) {
-          window.clearTimeout(this.editorPreviewDebounce);
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && activeFile.path !== file.path) {
+          return;
         }
+        this.activeFile = file;
+        this.cancelEditorPreviewDebounce();
         const liveMarkdown = editor.getValue();
         this.editorPreviewDebounce = window.setTimeout(() => {
           this.editorPreviewDebounce = null;
           void this.updatePreview(liveMarkdown, file);
-        }, 120);
+        }, this.currentPlatform === "rednote" ? 80 : 120);
       })
     );
     this.registerEvent(
@@ -6179,6 +6207,10 @@ var MDFlowView = class extends import_obsidian5.ItemView {
   showPlaceholder() {
     this.preparedContent = null;
     this.previewEl.innerHTML = '<div class="mdflow-placeholder">\u6253\u5F00\u4E00\u4E2A Markdown \u6587\u4EF6\u5F00\u59CB\u9884\u89C8</div>';
+  }
+  showLoading(message) {
+    this.preparedContent = null;
+    this.previewEl.innerHTML = `<div class="mdflow-placeholder">${message}</div>`;
   }
   async handleDownloadCurrentPage() {
     var _a;
@@ -6287,11 +6319,14 @@ var MDFlowView = class extends import_obsidian5.ItemView {
     }
     return null;
   }
-  async onClose() {
+  cancelEditorPreviewDebounce() {
     if (this.editorPreviewDebounce !== null) {
       window.clearTimeout(this.editorPreviewDebounce);
       this.editorPreviewDebounce = null;
     }
+  }
+  async onClose() {
+    this.cancelEditorPreviewDebounce();
     this.converter.dispose();
   }
 };

@@ -262,7 +262,8 @@
 .red-user-name-container {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  min-width: 0;
 }
 
 .red-user-name {
@@ -273,18 +274,23 @@
 }
 
 .red-verified-icon {
-  width: 18px;
-  height: 18px;
+  width: 19px;
+  height: 19px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  overflow: visible;
+  line-height: 0;
+  transform: translateY(1px);
 }
 
-.red-verified-icon-svg {
+.red-verified-icon-image {
   width: 100%;
   height: 100%;
   display: block;
+  object-fit: contain;
+  overflow: visible;
 }
 
 .red-user-id {

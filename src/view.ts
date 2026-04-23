@@ -309,7 +309,7 @@ export class MDFlowView extends ItemView {
         if (!Number.isNaN(parsed) && parsed >= 12 && parsed <= 28) {
           void onChange(input.value);
         }
-      }, 400);
+      }, 160);
     };
 
     input.addEventListener('change', () => {
@@ -383,12 +383,18 @@ export class MDFlowView extends ItemView {
   private registerEvents(): void {
     this.registerEvent(
       this.app.workspace.on('file-open', async (file) => {
+        this.cancelEditorPreviewDebounce();
+
         if (file && file.extension === 'md') {
+          this.previewRunId += 1;
           this.activeFile = file;
-          await this.updatePreview();
+          this.renderedHtml = '';
+          this.showLoading('正在生成排版预览...');
+          await this.updatePreview(undefined, file);
           return;
         }
 
+        this.previewRunId += 1;
         this.activeFile = null;
         this.renderedHtml = '';
         this.showPlaceholder();
@@ -402,17 +408,20 @@ export class MDFlowView extends ItemView {
           return;
         }
 
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && activeFile.path !== file.path) {
+          return;
+        }
+
         this.activeFile = file;
 
-        if (this.editorPreviewDebounce !== null) {
-          window.clearTimeout(this.editorPreviewDebounce);
-        }
+        this.cancelEditorPreviewDebounce();
 
         const liveMarkdown = editor.getValue();
         this.editorPreviewDebounce = window.setTimeout(() => {
           this.editorPreviewDebounce = null;
           void this.updatePreview(liveMarkdown, file);
-        }, 120);
+        }, this.currentPlatform === 'rednote' ? 80 : 120);
       })
     );
 
@@ -533,6 +542,11 @@ export class MDFlowView extends ItemView {
   private showPlaceholder(): void {
     this.preparedContent = null;
     this.previewEl.innerHTML = '<div class="mdflow-placeholder">打开一个 Markdown 文件开始预览</div>';
+  }
+
+  private showLoading(message: string): void {
+    this.preparedContent = null;
+    this.previewEl.innerHTML = `<div class="mdflow-placeholder">${message}</div>`;
   }
 
   private async handleDownloadCurrentPage(): Promise<void> {
@@ -660,11 +674,15 @@ export class MDFlowView extends ItemView {
     return null;
   }
 
-  async onClose(): Promise<void> {
+  private cancelEditorPreviewDebounce(): void {
     if (this.editorPreviewDebounce !== null) {
       window.clearTimeout(this.editorPreviewDebounce);
       this.editorPreviewDebounce = null;
     }
+  }
+
+  async onClose(): Promise<void> {
+    this.cancelEditorPreviewDebounce();
     this.converter.dispose();
   }
 }

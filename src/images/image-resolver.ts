@@ -4,6 +4,8 @@ import { App, TFile, requestUrl } from 'obsidian';
  * Resolves Obsidian internal image references to absolute paths or base64 data URLs.
  */
 export class ImageResolver {
+  private readonly imageDataUrlCache = new Map<string, Promise<string>>();
+
   constructor(private app: App) {}
 
   /**
@@ -78,11 +80,39 @@ export class ImageResolver {
    * Compresses large images using Canvas (max 1920px, quality 0.85).
    */
   async fetchImageAsBase64(url: string): Promise<string> {
+    if (this.isExternalUrl(url)) {
+      const cacheKey = this.normalizeExternalImageUrl(url);
+      const cached = this.imageDataUrlCache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
+      const request = this.fetchExternalImageBlob(url)
+        .then((blob) => this.blobToDataUrl(blob))
+        .catch((error) => {
+          this.imageDataUrlCache.delete(cacheKey);
+          throw error;
+        });
+
+      this.imageDataUrlCache.set(cacheKey, request);
+      this.pruneImageCache();
+      return request;
+    }
+
     const blob = this.isExternalUrl(url)
       ? await this.fetchExternalImageBlob(url)
       : await this.fetchInternalImageBlob(url);
 
     return this.blobToDataUrl(blob);
+  }
+
+  private pruneImageCache(): void {
+    const maxCachedImages = 120;
+    while (this.imageDataUrlCache.size > maxCachedImages) {
+      const firstKey = this.imageDataUrlCache.keys().next().value;
+      if (!firstKey) return;
+      this.imageDataUrlCache.delete(firstKey);
+    }
   }
 
   private async blobToDataUrl(blob: Blob): Promise<string> {
